@@ -94,7 +94,9 @@ def _assess_evidence(
   자료 부족을 실패한 실적으로 바꾸거나, 좋은 사실만 근거로 인정하지 않는다.
 - 독립 검증이나 적법한 권한처럼 확인을 요구하는 질문은 회사의 단순 주장만으로 충족시키지 않는다.
 - 핵심적인 상충이 해결되지 않았으면 unresolved_conflict=true, confirmed=false로 둔다.
-- 자료가 없으면 인용을 만들지 말고 미확인 이유와 필요한 추가 자료를 기록한다."""),
+- 자료가 없으면 인용을 만들지 말고 미확인 이유와 필요한 추가 자료를 기록한다.
+- 출력은 반드시 ProfileEvidenceAssessment 스키마에 맞는 JSON 객체여야 한다.
+- items 배열에는 단순 문자열이 아닌 정상적인 JSON 객체들만 포함해야 한다."""),
         ("user", """기업명: {company_name}
 프로필: {profile_name}
 평가 초점: {focus}
@@ -102,7 +104,7 @@ def _assess_evidence(
 근거(JSON): {evidence}"""),
     ])
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, timeout=60, max_retries=2)
-    chain = prompt | llm.with_structured_output(ProfileEvidenceAssessment, method="function_calling")
+    chain = prompt | llm.with_structured_output(ProfileEvidenceAssessment, strict=True)
     result = chain.invoke({
         "company_name": company_name, "profile_name": config["name"], "focus": config["focus"],
         "items": json.dumps(items, ensure_ascii=False),
