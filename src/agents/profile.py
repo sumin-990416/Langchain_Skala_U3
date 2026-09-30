@@ -66,72 +66,29 @@ def calculate_profile_score(domain_scores: Dict[Domain, float], weights: Dict[st
 
 def profile_agent_node(state: ProfileSendState) -> Dict[str, Any]:
     """
-    단일 Profile Agent를 실행하는 노드 함수
+    단일 Profile Agent를 실행하는 노드 함수.
+    각 성향별로 분리된 파일의 함수를 호출합니다.
     """
     profile_id = state["profile_name"]
-    config = load_profile_config(profile_id)
-    profile_name = config["name"]
-    weights = config["weights"]
-    focus = config["focus"]
     
-    # 1. 가중치 반영 점수 계산
-    score = calculate_profile_score(state["domain_scores"], weights)
-    
-    # 2. LLM 평가 생성 (gpt-4o-mini 사용)
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    structured_llm = llm.with_structured_output(LLMProfileOutput)
-    
-    evidence_text = ""
-    for ev in state["validated_evidence"]:
-        evidence_text += f"- [ID: {ev.item_id}, Source: {ev.source_id}] (등급: {ev.evidence_grade}): {ev.content}\n"
-    if not evidence_text:
-        evidence_text = "확인된 근거가 없습니다."
-        
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """당신은 배터리 AI 스타트업 전문 심사역 '{profile_name}'입니다.
-        
-당신의 투자 성향 및 최우선 판단 기준:
-{focus}
+    # 성향별 커스텀 모듈 라우팅
+    if profile_id == "기술중심형":
+        from src.agents.profiles.technology import run_technology_agent
+        result = run_technology_agent(state)
+    elif profile_id == "안정형":
+        from src.agents.profiles.stability import run_stability_agent
+        result = run_stability_agent(state)
+    elif profile_id == "성장형":
+        from src.agents.profiles.growth import run_growth_agent
+        result = run_growth_agent(state)
+    elif profile_id == "균형형":
+        from src.agents.profiles.balanced import run_balanced_agent
+        result = run_balanced_agent(state)
+    elif profile_id == "사업성중심형":
+        from src.agents.profiles.business import run_business_agent
+        result = run_business_agent(state)
+    else:
+        raise ValueError(f"알 수 없는 프로필입니다: {profile_id}")
 
-제공된 '도메인별 평가 점수'와 '확인된 근거'를 바탕으로, 당신의 성향에 입각해 철저하게 편향된 투자의견을 도출하세요.
-동일한 사실이라도 성향에 따라 강점이나 약점으로 다르게 해석되어야 합니다."""),
-        ("user", """
-[기업명]: {company_name}
-[계산된 당신의 총점]: {score} / 100
-
-[도메인별 점수]
-{domain_scores_text}
-
-[확인된 주요 근거]
-{evidence_text}
-""")
-    ])
-    
-    chain = prompt | structured_llm
-    
-    domain_scores_text = "\n".join([f"- {k.value}: {v}" for k, v in state["domain_scores"].items()])
-    current_company = state.get("current_company")
-    company_name = current_company.name if current_company else "Unknown Startup"
-    
-    result: LLMProfileOutput = chain.invoke({
-        "profile_name": profile_name,
-        "focus": focus,
-        "company_name": company_name,
-        "score": score,
-        "domain_scores_text": domain_scores_text,
-        "evidence_text": evidence_text
-    })
-    
-    profile_result = ProfileResult(
-        profile_name=profile_name,
-        weighted_score=score,
-        domain_contributions=result.domain_contributions.model_dump(),
-        supporting_evidence_ids=result.supporting_evidence_ids,
-        contrary_evidence_ids=result.contrary_evidence_ids,
-        unknown_items=result.unknown_items,
-        recommendation=result.recommendation,
-        due_diligence_questions=result.due_diligence_questions
-    )
-    
     # Reducer (`operator.add`)를 통해 graph state 배열에 자동 누적됨
-    return {"profile_results": [profile_result]}
+    return {"profile_results": [result]}
