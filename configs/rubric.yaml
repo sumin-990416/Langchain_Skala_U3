@@ -1,0 +1,37 @@
+gates:
+  insufficient_evidence_threshold: 0.6  # 근거 충족률 60% 미만 시 HOLD
+  high_disagreement_threshold: 8.0      # 표준편차 8점 이상 시 의견 불일치 명시
+  passing_score: 75                     # 최종 추천 합격선
+
+domains:
+  technology:
+    - id: "tech_01"
+      question: "SOH(배터리 건강 상태) 및 RUL(잔존 수명) 예측 알고리즘의 타당성과 정확도 수준은 어떠한가?"
+    - id: "tech_02"
+      question: "소프트웨어가 BMS 및 ESS 하드웨어 시스템과 실시간 연동이 가능한 구조인가?"
+    - id: "tech_03"
+      question: "핵심 기술에 대한 특허 확보 현황 및 방어력은 어떠한가?"
+
+  market:
+    - id: "mkt_01"
+      question: "타겟 시장(TAM/SAM/SOM)의 규모와 향후 예상 성장성은 어떠한가?"
+    - id: "mkt_02"
+      question: "주요 경쟁사 대비 제품이나 서비스가 가지는 차별점은 무엇인가?"
+
+  finance:
+    - id: "fin_01"
+      question: "현재 구축된 핵심 수익모델(BM)은 무엇이며, 실제 매출 발생 이력이 있는가?"
+    - id: "fin_02"
+      question: "유의미한 파일럿 테스트를 진행 중이거나 장기 계약을 체결한 주요 고객사가 있는가?"
+
+  risk:
+    - id: "rsk_01"
+      question: "화재 방지 등 배터리 안전 및 관련 규제에 대한 제조물책임(PL) 대비책이 있는가?"
+    - id: "rsk_02"
+      question: "분석 대상이 되는 배터리 운영 데이터에 대한 적법한 이용 권한을 확보하고 있는가?"
+
+  team:
+    - id: "team_01"
+      question: "창업진의 관련 산업 경험 및 이전 상용화 성공 이력이 충분한가?"
+    - id: "team_02"
+      question: "전략적 파트너십(OEM, 셀 제조사 등) 구축 수준은 어떠한가?"

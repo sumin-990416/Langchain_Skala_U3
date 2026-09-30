@@ -1,0 +1,55 @@
+profiles:
+  # 손연우: 기술중심형
+  technology_focused:
+    name: "기술중심형"
+    weights:
+      technology: 0.35
+      market: 0.20
+      finance: 0.10
+      risk: 0.15
+      team: 0.20
+    focus: "모델 정확도, 데이터 확보 역량, 핵심 특허, BMS/ESS 연동의 기술적 타당성"
+
+  # 강도희: 안정형
+  stability_focused:
+    name: "안정형"
+    weights:
+      technology: 0.15
+      market: 0.15
+      finance: 0.30
+      risk: 0.30
+      team: 0.10
+    focus: "안전성 검증, 규제 준수, 안정적인 현금흐름 유지, 확실한 데이터 권리 확보"
+
+  # 김대훈: 성장형
+  growth_focused:
+    name: "성장형"
+    weights:
+      technology: 0.20
+      market: 0.35
+      finance: 0.15
+      risk: 0.10
+      team: 0.20
+    focus: "시장 성장률 추이, 비즈니스 확장성, 파일럿에서 실제 고객으로의 전환 속도"
+
+  # 이연주: 균형형
+  balanced:
+    name: "균형형"
+    weights:
+      technology: 0.20
+      market: 0.20
+      finance: 0.20
+      risk: 0.20
+      team: 0.20
+    focus: "모든 지표의 기준선(Baseline) 충족 여부, 영역 간 균형, 팀 내 이견 조율 및 합의 가능성"
+
+  # 정수민: 사업성중심형
+  business_focused:
+    name: "사업성중심형"
+    weights:
+      technology: 0.15
+      market: 0.25
+      finance: 0.20
+      risk: 0.10
+      team: 0.30
+    focus: "수익 모델(BM)의 명확성, 주요 고객/계약 확보 상황, 팀의 실제 사업 실행력"
