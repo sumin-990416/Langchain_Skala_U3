@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from ...schemas import Domain, ProfileResult
+from ...schemas import Domain, FinalDecision, ProfileResult, ResultCategory
 from ..profile import calculate_profile_score, LLMProfileOutput, load_profile_config
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -178,7 +178,12 @@ def run_growth_agent(state: Any) -> ProfileResult:
     # ==========================================
     # [2] 팀원 커스텀 평가 로직 (30% 반영) - 자유롭게 수정!
     # ==========================================
-    validated_evidence = state.get("validated_evidence", [])
+    confirmed_source_ids = set(evidence_check.source_ids)
+    validated_evidence = [
+        evidence
+        for evidence in state.get("validated_evidence", [])
+        if evidence.source_id in confirmed_source_ids
+    ]
 
     evidence_text = ""
     for ev in validated_evidence:
@@ -292,12 +297,37 @@ def run_growth_agent(state: Any) -> ProfileResult:
             GROWTH_PARAMETER_LABELS[key]
             for key in missing_core_parameters
         ]
-        raise GrowthEvidenceInsufficientError(
-            "성장형 점수 미산출 - "
-            f"근거 충족률 {growth_evidence_coverage * 100:.1f}% "
-            f"(기준 {GROWTH_EVIDENCE_THRESHOLD * 100:.0f}%), "
-            f"근거 부족 항목: {insufficient_labels or '없음'}, "
-            f"미확인 핵심 지표: {core_labels or '없음'}"
+        coverage_percent = round(growth_evidence_coverage * 100, 2)
+        unknown_items = list(dict.fromkeys(
+            growth_evaluation.unknown_items
+            + [f"성장형 근거 부족: {label}" for label in insufficient_labels]
+            + [f"성장형 핵심 지표 미확인: {label}" for label in core_labels]
+        ))
+        return ProfileResult(
+            profile_name=profile_name,
+            weighted_score=None,
+            decision=FinalDecision.HOLD_RAG,
+            evidence_coverage=coverage_percent,
+            result_category=(
+                ResultCategory.PARTIAL_EVIDENCE
+                if coverage_percent > 0
+                else ResultCategory.INSUFFICIENT_EVIDENCE
+            ),
+            supporting_evidence_ids=list(dict.fromkeys(
+                growth_evaluation.supporting_evidence_ids
+            )),
+            unknown_items=unknown_items,
+            recommendation=(
+                "점수 없음 / 근거 부족 판단 유보 | "
+                f"성장형 세부 근거충족률 {coverage_percent:.1f}% "
+                f"(기준 {GROWTH_EVIDENCE_THRESHOLD * 100:.0f}%). "
+                f"미확인 핵심 지표: {', '.join(core_labels) or '없음'}"
+            ),
+            due_diligence_questions=list(dict.fromkeys(
+                [f"{label}을 확인할 수 있는 계약·매출·고객 자료를 제출할 것" for label in (
+                    core_labels or insufficient_labels
+                )]
+            )),
         )
 
     custom_score = calculate_growth_custom_score(growth_parameter_assessments)

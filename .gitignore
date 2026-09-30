@@ -12,4 +12,7 @@ venv/
 .DS_Store
 .vscode/
 
+# Generated QA artifacts
+tmp/
+
 # 환경 스캐폴딩

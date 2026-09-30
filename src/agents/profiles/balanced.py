@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from ...schemas import Domain, ProfileResult
+from ...schemas import Domain, FinalDecision, ProfileResult, ResultCategory
 from ..profile import calculate_profile_score, load_profile_config
 
 
@@ -62,11 +62,11 @@ def _is_company_evidence(content: str, company_name: str) -> bool:
     lower = content.casefold()
     company = company_name.casefold()
     if "accure" in company:
-        return "accure" in lower or bool(re.search(r"\bA-\d{2}\b", content))
+        return "accure" in lower or bool(re.search(r"\bA-?\d{2}\b", content))
     if "volytica" in company:
-        return "volytica" in lower or bool(re.search(r"\bV-\d{2}\b", content))
+        return "volytica" in lower or bool(re.search(r"\bV-?\d{2}\b", content))
     if "electra" in company:
-        return "electra" in lower or bool(re.search(r"\bE-\d{2}\b", content))
+        return "electra" in lower or bool(re.search(r"\bE-?\d{2}\b", content))
     return company in lower
 
 
@@ -80,7 +80,7 @@ def _prepare_evidence(state: Any, company_name: str) -> Dict[str, Dict[str, Any]
             continue
         seen.add(content)
         key = f"EV-{len(selected) + 1:03d}"
-        pdf_ids = list(dict.fromkeys(re.findall(r"\b[AVE]-\d{2}\b", content)))
+        pdf_ids = list(dict.fromkeys(re.findall(r"\b[AVE]-?\d{2}\b", content)))
         selected[key] = {
             "content": content,
             "source": ev.source_id or "출처 미상",
@@ -176,23 +176,53 @@ def run_balanced_agent(state: Any) -> ProfileResult:
     })
     if custom_score is None:
         missing = [name for name, item in criterion_results.items() if item["score"] is None]
-        raise InsufficientBalancedEvidenceError(
-            f"{company_name} 균형형 점수 미산출: {', '.join(missing)}. "
-            "공통 ProfileResult는 숫자 점수만 허용하므로 0점이나 임의 점수로 대체하지 않았습니다."
+        covered_weight = sum(
+            CRITERION_WEIGHTS[name]
+            for name, item in criterion_results.items()
+            if item["score"] is not None
+        )
+        coverage = round(covered_weight * 100, 2)
+        return ProfileResult(
+            profile_name=profile_name,
+            weighted_score=None,
+            decision=FinalDecision.HOLD_RAG,
+            evidence_coverage=coverage,
+            result_category=(
+                ResultCategory.PARTIAL_EVIDENCE
+                if coverage > 0
+                else ResultCategory.INSUFFICIENT_EVIDENCE
+            ),
+            supporting_evidence_ids=list(dict.fromkeys(
+                ref for item in criterion_results.values()
+                for ref in item["evidence_ids"]
+            )),
+            unknown_items=[
+                f"{name}: {criterion_results[name]['missing_information'] or '직접 근거 미확인'}"
+                for name in missing
+            ],
+            recommendation=(
+                "점수 없음 / 근거 부족 판단 유보 | "
+                f"균형형 세부 근거충족률 {coverage:.1f}%. "
+                f"근거 부족 항목: {', '.join(missing)}"
+            ),
+            due_diligence_questions=[
+                f"{name}: {criterion_results[name]['missing_information'] or '기업별 직접 근거를 제출할 것'}"
+                for name in missing
+            ],
         )
 
     final_score = round(common_score * 0.7 + custom_score * 0.3, 2)
     if final_score >= 75:
-        decision = "투자검토 추천 (추가 실사 필요)"
+        decision = FinalDecision.RECOMMEND
     elif final_score >= 60:
-        decision = "조건부 검토"
+        decision = FinalDecision.CONDITIONAL
     else:
-        decision = "투자 보류 및 추가 실사"
+        decision = FinalDecision.HOLD_SCORE
     grade_summary = "·".join(
         f"{SHORT_LABELS[name]} {item['label']}"
         for name, item in criterion_results.items()
     )
-    recommendation = f"{decision} | {grade_summary}"
+    recommendation = f"{decision.value} | {grade_summary}"
     unknown_items = [
         f"{name}: {item['missing_information']}"
         for name, item in criterion_results.items() if item["missing_information"]
@@ -211,6 +241,13 @@ def run_balanced_agent(state: Any) -> ProfileResult:
     return ProfileResult(
         profile_name=profile_name,
         weighted_score=final_score,
+        decision=decision,
+        evidence_coverage=100.0,
+        result_category=(
+            ResultCategory.PARTIAL_EVIDENCE
+            if unknown_items
+            else ResultCategory.COMPLETE
+        ),
         domain_contributions=domain_contributions,
         supporting_evidence_ids=supporting_ids,
         contrary_evidence_ids=[],

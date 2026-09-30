@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.schemas import ProfileResult, Domain
+from src.schemas import FinalDecision, ProfileResult, Domain, ResultCategory
 
 # 설정·그래프에서는 영문 ID를, 기존 담당자별 코드에서는 한글명을 사용합니다.
 # 두 표기를 여기서만 연결해 설정 조회와 에이전트 분기가 같은 기준을 따릅니다.
@@ -90,25 +90,56 @@ def profile_agent_node(state: ProfileSendState) -> Dict[str, Any]:
     각 성향별로 분리된 파일의 함수를 호출합니다.
     """
     profile_id = _canonical_profile_id(state["profile_name"])
-    
-    # 성향별 커스텀 모듈 라우팅
-    if profile_id == "technology_focused":
-        from src.agents.profiles.technology import run_technology_agent
-        result = run_technology_agent(state)
-    elif profile_id == "stability_focused":
-        from src.agents.profiles.stability import run_stability_agent
-        result = run_stability_agent(state)
-    elif profile_id == "growth_focused":
-        from src.agents.profiles.growth import run_growth_agent
-        result = run_growth_agent(state)
-    elif profile_id == "balanced":
-        from src.agents.profiles.balanced import run_balanced_agent
-        result = run_balanced_agent(state)
-    elif profile_id == "business_focused":
-        from src.agents.profiles.business import run_business_agent
-        result = run_business_agent(state)
-    else:
-        raise ValueError(f"알 수 없는 프로필입니다: {profile_id}")
+
+    try:
+        # 성향별 커스텀 모듈 라우팅
+        if profile_id == "technology_focused":
+            from src.agents.profiles.technology import run_technology_agent
+            result = run_technology_agent(state)
+        elif profile_id == "stability_focused":
+            from src.agents.profiles.stability import run_stability_agent
+            result = run_stability_agent(state)
+        elif profile_id == "growth_focused":
+            from src.agents.profiles.growth import run_growth_agent
+            result = run_growth_agent(state)
+        elif profile_id == "balanced":
+            from src.agents.profiles.balanced import run_balanced_agent
+            result = run_balanced_agent(state)
+        elif profile_id == "business_focused":
+            from src.agents.profiles.business import run_business_agent
+            result = run_business_agent(state)
+        else:
+            raise ValueError(f"알 수 없는 프로필입니다: {profile_id}")
+    except Exception as exc:
+        # 한 Agent의 모델 연결·파싱·코드 오류가 전체 LangGraph와 보고서 생성을
+        # 중단시키지 않게 구조화된 오류 결과로 변환합니다.
+        try:
+            profile_name = load_profile_config(profile_id)["name"]
+        except Exception:
+            profile_name = _PROFILE_NAMES.get(profile_id, str(state["profile_name"]))
+        error_type = type(exc).__name__
+        error_detail = " ".join(str(exc).split())[:240]
+        if error_type in {
+            "APIConnectionError", "APITimeoutError", "AuthenticationError",
+            "RateLimitError", "ConnectError", "ReadTimeout",
+        }:
+            safe_message = f"{error_type}: 모델 API 연결·인증·응답 상태 확인 필요"
+        else:
+            safe_message = error_type if not error_detail else f"{error_type}: {error_detail}"
+        result = ProfileResult(
+            profile_name=profile_name,
+            weighted_score=None,
+            decision=FinalDecision.HOLD_RAG,
+            evidence_coverage=None,
+            result_category=ResultCategory.EXECUTION_ERROR,
+            recommendation=(
+                "점수 없음 / 에이전트 평가 오류로 판단 유보. "
+                "다른 Agent 결과와 보고서 생성은 계속 진행합니다."
+            ),
+            unknown_items=["에이전트 평가 처리 결과 미확인"],
+            due_diligence_questions=["연결 상태와 구조화 출력 스키마를 확인한 뒤 재평가할 것"],
+            error_message=safe_message,
+        )
 
     # Reducer (`operator.add`)를 통해 graph state 배열에 자동 누적됨
     return {"profile_results": [result]}
