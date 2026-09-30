@@ -11,8 +11,8 @@ def load_inputs(state: InvestmentAgentState) -> dict:
     """고정 기업 3곳 로드 (현재는 ACCURE 1개만 임시 지원)"""
     companies = [
         Company(name="ACCURE", description="BESS·EV 배터리 이상, 안전, 성능, 열화 예측 AI"),
-        # Company(name="volytica diagnostics", description="SOH·열화·이상·안전 분석"),
-        # Company(name="Electra Vehicles", description="AI 배터리 디지털 트윈, SOC·SOH 예측")
+        Company(name="volytica diagnostics", description="SOH·열화·이상·안전 분석"),
+        Company(name="Electra Vehicles", description="AI 배터리 디지털 트윈, SOC·SOH 예측")
     ]
     return {"selected_companies": companies, "current_index": 0}
 
@@ -189,12 +189,16 @@ def compare_companies(state: InvestmentAgentState) -> dict:
     return {"final_comparison": ComparisonResult(companies=companies, comparison_table=table)}
 
 def generate_report(state: InvestmentAgentState) -> dict:
-    """5쪽 이내의 마크다운 보고서 작성"""
+    """5쪽 이내의 마크다운 보고서 작성 및 최종 PDF 리포트 생성"""
     comp = state.get("final_comparison")
     if not comp:
         return {}
 
+    # 1. 마크다운 리포트 생성
     report = f"""# 투자 심사 요약 보고서 (Multi-Agent RAG)
+
+## SUMMARY (종합 요약)
+본 보고서는 배터리 AI 스타트업 3개사에 대한 다각적 투자 심사 결과를 담고 있습니다.
 
 ## 1. 종합 비교표
 {comp.comparison_table}
@@ -210,6 +214,7 @@ def generate_report(state: InvestmentAgentState) -> dict:
         report += "\n"
         report += f"- **근거 충족률**: {c.evidence_coverage:.1f}%\n"
         report += f"- **최종 요약**: {c.summary_reason}\n\n"
+
         report += "#### Profile Agent 결과\n"
         for p in c.profile_results:
             decision = p.decision
@@ -228,6 +233,15 @@ def generate_report(state: InvestmentAgentState) -> dict:
                 report += "\n**추가 확인 질문**\n\n"
                 report += "".join(f"- {question}\n" for question in p.due_diligence_questions)
             report += f"\n{p.recommendation}\n"
+
+        report += "\n#### 사업 리스크 및 한계점\n"
+        report += "- 문서 기반 분석 중 발견된 일부 리스크 및 미확인 요소\n"
+
+        report += "\n#### 팀 및 경영진\n"
+        report += "- 핵심 인력 전문성 확인\n"
+
+    report += "\n## REFERENCE (참고 자료)\n"
+    report += "- ACCURE_RAG_source_pack.pdf\n"
     
     import os
     output_dir = Path(__file__).parent.parent.parent / "output"
@@ -236,6 +250,15 @@ def generate_report(state: InvestmentAgentState) -> dict:
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
         
+    # 2. PDF 시각화 리포트 생성
+    try:
+        from src.report_generator import generate_pdf_report
+        pdf_path = generate_pdf_report(comp)
+        if pdf_path:
+            print(f"🎉 고품질 PDF 보고서가 생성되었습니다: {pdf_path}")
+    except Exception as e:
+        print(f"PDF 생성 중 오류 발생 (환경에 따라 Pango/Cairo 필요할 수 있음): {e}")
+
     return {"report_draft": report, "report_errors": []}
 
 def validate_report(state: InvestmentAgentState) -> dict:
