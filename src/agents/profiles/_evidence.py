@@ -16,7 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from ...schemas import Evidence, FinalDecision, ProfileResult
+from ...schemas import Evidence, FinalDecision, ProfileResult, ResultCategory
 
 
 class EvidenceCitation(BaseModel):
@@ -137,7 +137,13 @@ class ProfileEvidenceCheck:
             reason += " 미확인 핵심 항목: " + ", ".join(self.missing_critical)
         return ProfileResult(
             profile_name=profile_name, weighted_score=None, decision=FinalDecision.HOLD_RAG,
-            evidence_coverage=self.coverage, recommendation=reason,
+            evidence_coverage=self.coverage,
+            result_category=(
+                ResultCategory.PARTIAL_EVIDENCE
+                if self.coverage > 0
+                else ResultCategory.INSUFFICIENT_EVIDENCE
+            ),
+            recommendation=reason,
             unknown_items=self.unknown_items, due_diligence_questions=self.due_diligence_questions,
         )
 
@@ -237,6 +243,13 @@ def attach_evidence_check(result: ProfileResult, check: ProfileEvidenceCheck) ->
     )
     return result.model_copy(update={
         "decision": decision,
+        "result_category": (
+            ResultCategory.NEEDS_DUE_DILIGENCE
+            if decision == FinalDecision.HOLD_GATE
+            else ResultCategory.PARTIAL_EVIDENCE
+            if check.coverage < 100 or check.unknown_items
+            else ResultCategory.COMPLETE
+        ),
         "domain_contributions": result.domain_contributions if result.weighted_score is not None else {},
         "evidence_coverage": check.coverage,
         "unknown_items": list(dict.fromkeys(check.unknown_items + result.unknown_items)),

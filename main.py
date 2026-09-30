@@ -143,6 +143,7 @@ def main():
         errors=[]
     )
     
+    final_report_errors = []
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -185,8 +186,12 @@ def main():
                     progress.update(task_id, description="[magenta]종합 보고서 생성 중...[/magenta]")
                     
                 elif node_name == "generate_report":
-                    console.print(" ➔ 📑 투자 심사 마크다운 보고서 생성 완료")
+                    final_report_errors = node_state.get("report_errors", [])
+                    console.print(" ➔ 📑 투자 심사 보고서 생성 단계 완료")
                     progress.update(task_id, description="[magenta]보고서 저장 중...[/magenta]")
+
+                elif node_name == "validate_report":
+                    final_report_errors = node_state.get("report_errors", final_report_errors)
                     
                 elif node_name in ["build_questions", "retrieve_evidence", "score_common"]:
                     progress.update(task_id, description=f"[magenta]에이전트 노드 통과: {node_name}[/magenta]")
@@ -199,12 +204,20 @@ def main():
 
     console.print("\n" + "="*50)
 
-    if pdf_report_path.exists():
+    if pdf_report_path.exists() and not final_report_errors:
         console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{pdf_report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
         console.print("\n[bold cyan]📄 생성된 PDF 보고서를 자동으로 엽니다...[/bold cyan]")
         os.system(f"open '{pdf_report_path}'")
     else:
-        console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{md_report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
+        if final_report_errors:
+            console.print(Panel(
+                "[bold yellow]⚠ PDF 보고서 검증 경고[/bold yellow]\n"
+                + "\n".join(f"- {error}" for error in final_report_errors)
+                + f"\n마크다운 결과는 {md_report_path.name}에 저장되었습니다.",
+                border_style="yellow",
+            ))
+        else:
+            console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{md_report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
         if md_report_path.exists():
             console.print("\n[bold cyan]📄 생성된 마크다운 보고서를 자동으로 엽니다...[/bold cyan]")
             os.system(f"open '{md_report_path}'")

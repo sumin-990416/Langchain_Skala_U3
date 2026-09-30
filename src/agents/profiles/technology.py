@@ -20,7 +20,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from ...schemas import Domain, Evidence, FinalDecision, ProfileResult
+from ...schemas import Domain, Evidence, FinalDecision, ProfileResult, ResultCategory
 from ..profile import calculate_profile_score, load_profile_config
 
 
@@ -362,6 +362,15 @@ def run_technology_agent(state: Any) -> ProfileResult:
         weighted_score=final_score,
         decision=FinalDecision(decision),
         evidence_coverage=round(coverage * 100, 2),
+        result_category=(
+            ResultCategory.INSUFFICIENT_EVIDENCE
+            if coverage == 0
+            else ResultCategory.PARTIAL_EVIDENCE
+            if final_score is None or unknown_items
+            else ResultCategory.NEEDS_DUE_DILIGENCE
+            if decision == FinalDecision.HOLD_GATE.value
+            else ResultCategory.COMPLETE
+        ),
         domain_contributions=contributions,
         supporting_evidence_ids=list(dict.fromkeys(supporting_ids)),
         contrary_evidence_ids=list(dict.fromkeys(contrary_ids)),

@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from ...schemas import Domain, FinalDecision, ProfileResult
+from ...schemas import Domain, FinalDecision, ProfileResult, ResultCategory
 from ..profile import calculate_profile_score, load_profile_config
 
 
@@ -62,11 +62,11 @@ def _is_company_evidence(content: str, company_name: str) -> bool:
     lower = content.casefold()
     company = company_name.casefold()
     if "accure" in company:
-        return "accure" in lower or bool(re.search(r"\bA-\d{2}\b", content))
+        return "accure" in lower or bool(re.search(r"\bA-?\d{2}\b", content))
     if "volytica" in company:
-        return "volytica" in lower or bool(re.search(r"\bV-\d{2}\b", content))
+        return "volytica" in lower or bool(re.search(r"\bV-?\d{2}\b", content))
     if "electra" in company:
-        return "electra" in lower or bool(re.search(r"\bE-\d{2}\b", content))
+        return "electra" in lower or bool(re.search(r"\bE-?\d{2}\b", content))
     return company in lower
 
 
@@ -80,7 +80,7 @@ def _prepare_evidence(state: Any, company_name: str) -> Dict[str, Dict[str, Any]
             continue
         seen.add(content)
         key = f"EV-{len(selected) + 1:03d}"
-        pdf_ids = list(dict.fromkeys(re.findall(r"\b[AVE]-\d{2}\b", content)))
+        pdf_ids = list(dict.fromkeys(re.findall(r"\b[AVE]-?\d{2}\b", content)))
         selected[key] = {
             "content": content,
             "source": ev.source_id or "출처 미상",
@@ -176,31 +176,37 @@ def run_balanced_agent(state: Any) -> ProfileResult:
     })
     if custom_score is None:
         missing = [name for name, item in criterion_results.items() if item["score"] is None]
-        known_weight = sum(
+        covered_weight = sum(
             CRITERION_WEIGHTS[name]
             for name, item in criterion_results.items()
             if item["score"] is not None
         )
-        supporting_ids = list(dict.fromkeys(
-            ref for item in criterion_results.values()
-            for ref in item["evidence_ids"]
-        ))
+        coverage = round(covered_weight * 100, 2)
         return ProfileResult(
             profile_name=profile_name,
             weighted_score=None,
             decision=FinalDecision.HOLD_RAG,
-            evidence_coverage=round(known_weight * 100, 2),
-            supporting_evidence_ids=supporting_ids,
+            evidence_coverage=coverage,
+            result_category=(
+                ResultCategory.PARTIAL_EVIDENCE
+                if coverage > 0
+                else ResultCategory.INSUFFICIENT_EVIDENCE
+            ),
+            supporting_evidence_ids=list(dict.fromkeys(
+                ref for item in criterion_results.values()
+                for ref in item["evidence_ids"]
+            )),
             unknown_items=[
-                f"{name}: {criterion_results[name]['missing_information']}"
+                f"{name}: {criterion_results[name]['missing_information'] or '직접 근거 미확인'}"
                 for name in missing
             ],
             recommendation=(
-                "점수 없음 / 근거 부족 판단 유보 | 균형형 연결성 평가 중 "
-                f"{', '.join(missing)} 근거가 부족합니다."
+                "점수 없음 / 근거 부족 판단 유보 | "
+                f"균형형 세부 근거충족률 {coverage:.1f}%. "
+                f"근거 부족 항목: {', '.join(missing)}"
             ),
             due_diligence_questions=[
-                f"{name}: {criterion_results[name]['missing_information']}"
+                f"{name}: {criterion_results[name]['missing_information'] or '기업별 직접 근거를 제출할 것'}"
                 for name in missing
             ],
         )
@@ -237,6 +243,11 @@ def run_balanced_agent(state: Any) -> ProfileResult:
         weighted_score=final_score,
         decision=decision,
         evidence_coverage=100.0,
+        result_category=(
+            ResultCategory.PARTIAL_EVIDENCE
+            if unknown_items
+            else ResultCategory.COMPLETE
+        ),
         domain_contributions=domain_contributions,
         supporting_evidence_ids=supporting_ids,
         contrary_evidence_ids=[],

@@ -12,11 +12,15 @@ load_dotenv()
 RAW_DATA_PATH = Path(__file__).parent.parent.parent / "data" / "raw"
 
 def get_company_name_from_filename(filename: str) -> str:
-    """파일명에서 기업명을 유추합니다 (예: ACCURE_invest_report.pdf -> ACCURE)"""
-    base = os.path.splitext(filename)[0]
-    # '_', '-' 등을 공백으로 치환 후 첫 번째 단어를 기업명으로 간주 (단순 예시)
-    parts = base.replace('_', ' ').replace('-', ' ').split()
-    return parts[0] if parts else "Unknown"
+    """파일명에서 현재 평가 대상 기업명을 일관되게 정규화합니다."""
+    lower = filename.casefold()
+    if "accure" in lower:
+        return "ACCURE"
+    if "volytica" in lower:
+        return "volytica diagnostics"
+    if "electra" in lower:
+        return "Electra Vehicles"
+    return "ALL"
 
 def ingest_documents():
     print(f"데이터 스캔 시작... (경로: {RAW_DATA_PATH})")
@@ -40,10 +44,12 @@ def ingest_documents():
                 continue
                 
             # 메타데이터에 기업명 등 주입
-            for d in loaded_docs:
+            for page_index, d in enumerate(loaded_docs, start=1):
                 d.metadata["company"] = company_name
                 d.metadata["source_type"] = "document"
-                d.metadata["evidence_grade"] = "B" # 기본 문서 등급 세팅
+                d.metadata["source_file"] = file.name
+                d.metadata["source_id"] = f"{file.stem}:p{page_index}"
+                d.metadata["evidence_grade"] = "B" # 문서 내부 출처별 세분화 전 기본값
                 d.metadata["is_direct"] = True
             
             docs.extend(loaded_docs)
