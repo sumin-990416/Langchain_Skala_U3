@@ -158,30 +158,6 @@
             display: block;
         }
         
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 0;
-            background: #ffffff;
-            border-radius: 8px;
-            overflow: hidden;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-        }
-        th, td {
-            border: 1px solid #e2e8f0;
-            padding: 10px 8px;
-            text-align: center;
-            font-size: 11px;
-        }
-        th {
-            background-color: #f1f5f9;
-            color: #475569;
-            font-weight: 700;
-        }
-        tr:nth-child(even) {
-            background-color: #f8fafc;
-        }
-        
         .page-break {
             page-break-before: always;
         }
@@ -219,6 +195,101 @@
             border-bottom: 2px solid #cbd5e1;
             padding-bottom: 8px;
             margin-bottom: 12px;
+        }
+        
+        /* New Text-based layout styles */
+        .company-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .company-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: #f8fafc;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #f1f5f9;
+        }
+        .c-name {
+            font-weight: 700;
+            color: #334155;
+            width: 45%;
+            font-size: 11px;
+        }
+        .c-score {
+            font-weight: 800;
+            color: #3b82f6;
+            width: 25%;
+            text-align: center;
+            font-size: 12px;
+        }
+        .c-decision {
+            font-weight: 700;
+            font-size: 10px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            width: 30%;
+            text-align: center;
+        }
+        .pass { background-color: #d1fae5; color: #059669; }
+        .fail { background-color: #fee2e2; color: #b91c1c; }
+
+        .final-container {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .final-card {
+            background: #ffffff;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            padding: 15px;
+        }
+        .f-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #e2e8f0;
+            padding-bottom: 10px;
+            margin-bottom: 10px;
+        }
+        .f-name {
+            font-size: 15px;
+            font-weight: 800;
+            color: #0f172a;
+        }
+        .f-decision {
+            font-size: 12px;
+            font-weight: 700;
+            padding: 5px 10px;
+            border-radius: 6px;
+        }
+        .f-body {
+            display: flex;
+            justify-content: space-between;
+        }
+        .f-item {
+            background: #f8fafc;
+            padding: 10px;
+            border-radius: 6px;
+            width: 18%;
+            text-align: center;
+            border: 1px solid #f1f5f9;
+        }
+        .f-item span {
+            display: block;
+            font-size: 10px;
+            color: #64748b;
+            margin-bottom: 4px;
+            font-weight: 600;
+        }
+        .f-item strong {
+            display: block;
+            font-size: 14px;
+            color: #1e293b;
         }
     </style>
 </head>
@@ -287,69 +358,41 @@
         {% for profile_name, results in profiles_dict.items() %}
         <div class="profile-card">
             <h3>{{ profile_name }} 관점</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th style="width: 45%;">기업명</th>
-                        <th style="width: 25%;">평가 점수</th>
-                        <th style="width: 30%;">투자의견</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for item in results %}
-                    <tr>
-                        <td style="font-weight: 600;">{{ item.company }}</td>
-                        <td style="color: #3b82f6; font-weight: bold;">{{ item.result.weighted_score | round(2) }}</td>
-                        <td>
-                            {% if item.result.recommendation == "투자검토 추천" %}
-                                <span style="color: #10b981; font-weight: bold;">{{ item.result.recommendation }}</span>
-                            {% else %}
-                                {{ item.result.recommendation }}
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+            <div class="company-list">
+                {% for item in results %}
+                <div class="company-row">
+                    <div class="c-name">{{ item.company }}</div>
+                    <div class="c-score">{{ item.result.weighted_score | round(2) }}점</div>
+                    <div class="c-decision {% if item.result.recommendation == '투자검토 추천' %}pass{% else %}fail{% endif %}">
+                        {{ item.result.recommendation }}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
         </div>
         {% endfor %}
     </div>
 
     <div style="margin-top: 15px;"></div>
-    <h2 class="section-title">2. 최종 종합 평가 비교표</h2>
-    <table>
-        <thead>
-            <tr>
-                <th>기업명</th>
-                <th>기술(30%)</th>
-                <th>시장(20%)</th>
-                <th>재무(20%)</th>
-                <th>안정성(15%)</th>
-                <th>사업/팀(15%)</th>
-                <th style="background-color:#1e293b; color:white;">최종 점수</th>
-                <th style="background-color:#1e293b; color:white;">판정 결과</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for c in companies %}
-            <tr>
-                <td style="font-weight: 600; background-color:#f8fafc;">{{ c.company_name }}</td>
-                <td>{{ c.domain_scores['technology'] | round(2) }}</td>
-                <td>{{ c.domain_scores['market'] | round(2) }}</td>
-                <td>{{ c.domain_scores['finance'] | round(2) }}</td>
-                <td>{{ c.domain_scores['risk'] | round(2) }}</td>
-                <td>{{ c.domain_scores['team'] | round(2) }}</td>
-                <td style="font-weight: bold; color: #0f172a;">{{ c.average_score | round(2) }}</td>
-                <td style="font-weight: bold;">
-                    {% if c.final_decision == "투자검토 추천" %}
-                        <span style="color: #10b981;">{{ c.final_decision }}</span>
-                    {% else %}
-                        <span style="color: #ef4444;">{{ c.final_decision }}</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <h2 class="section-title">2. 최종 종합 평가 상세</h2>
+    <div class="final-container">
+        {% for c in companies %}
+        <div class="final-card">
+            <div class="f-header">
+                <span class="f-name">{{ c.company_name }}</span>
+                <span class="f-decision {% if c.final_decision == '투자검토 추천' %}pass{% else %}fail{% endif %}">
+                    {{ c.final_decision }} ({{ c.average_score | round(2) }}점)
+                </span>
+            </div>
+            <div class="f-body">
+                <div class="f-item"><span>기술(30%)</span> <strong>{{ c.domain_scores['technology'] | round(2) }}</strong></div>
+                <div class="f-item"><span>시장(20%)</span> <strong>{{ c.domain_scores['market'] | round(2) }}</strong></div>
+                <div class="f-item"><span>재무(20%)</span> <strong>{{ c.domain_scores['finance'] | round(2) }}</strong></div>
+                <div class="f-item"><span>안정성(15%)</span> <strong>{{ c.domain_scores['risk'] | round(2) }}</strong></div>
+                <div class="f-item"><span>사업/팀(15%)</span> <strong>{{ c.domain_scores['team'] | round(2) }}</strong></div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
 </body>
 </html>
