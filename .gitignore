@@ -12,6 +12,4 @@ venv/
 .DS_Store
 .vscode/
 
-# 환경 스캐폴딩 
-pyproject.toml
-uv.lock
+# 환경 스캐폴딩

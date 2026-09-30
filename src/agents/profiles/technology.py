@@ -10,7 +10,7 @@ def run_technology_agent(state: Any) -> ProfileResult:
     # ==========================================
     # [1] 공통 파라미터 및 점수 (70% 반영) - 수정 지양
     # ==========================================
-    profile_id = "기술중심형"
+    profile_id = "technology_focused"
     config = load_profile_config(profile_id)
     profile_name = config["name"]
     weights = config["weights"]

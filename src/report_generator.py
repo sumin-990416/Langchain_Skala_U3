@@ -1,0 +1,85 @@
+import os
+from pathlib import Path
+import datetime
+import matplotlib.pyplot as plt
+import numpy as np
+from jinja2 import Environment, FileSystemLoader
+from weasyprint import HTML
+
+def generate_pdf_report(comparison_result):
+    # 경로 설정
+    base_dir = Path(__file__).parent.parent
+    output_dir = base_dir / "output"
+    images_dir = output_dir / "images"
+    output_dir.mkdir(exist_ok=True)
+    images_dir.mkdir(exist_ok=True)
+    
+    companies = comparison_result.companies
+    if not companies:
+        return None
+        
+    # 점수 기준으로 정렬
+    companies_sorted = sorted(companies, key=lambda x: x.average_score, reverse=True)
+    best_company = companies_sorted[0]
+    
+    # 한글 폰트 설정 (Mac)
+    plt.rcParams['font.family'] = 'AppleGothic'
+    plt.rcParams['axes.unicode_minus'] = False
+    
+    # 1. Bar Chart 생성 (최종 투자지표)
+    bar_chart_path = images_dir / "bar_chart.png"
+    plt.figure(figsize=(6, 3))
+    names = [c.company_name for c in companies]
+    scores = [c.average_score for c in companies]
+    y_pos = np.arange(len(names))
+    
+    colors = ['#1976D2', '#4CAF50', '#9C27B0']
+    plt.barh(y_pos, scores, color=colors, height=0.5)
+    plt.yticks(y_pos, names)
+    plt.gca().invert_yaxis()  # 상위 항목이 위에 오도록
+    
+    # 레이블 추가
+    for i, v in enumerate(scores):
+        plt.text(v + 1, i, f"{v:.1f}", va='center')
+        
+    plt.box(False)
+    plt.tight_layout()
+    plt.savefig(bar_chart_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # 2. Donut Chart 생성 (근거충족률)
+    donut_chart_path = images_dir / "donut_chart.png"
+    fig, axes = plt.subplots(1, len(companies), figsize=(8, 3))
+    if len(companies) == 1:
+        axes = [axes]
+        
+    for i, c in enumerate(companies):
+        ax = axes[i]
+        coverage = c.evidence_coverage
+        sizes = [coverage, max(0, 100 - coverage)]
+        ax.pie(sizes, colors=[colors[i%len(colors)], '#EEEEEE'], startangle=90, 
+               counterclock=False, wedgeprops=dict(width=0.3))
+        ax.text(0, 0, f"{coverage:.0f}%", ha='center', va='center', fontsize=12, fontweight='bold')
+        ax.set_title(c.company_name, y=-0.1)
+        
+    plt.tight_layout()
+    plt.savefig(donut_chart_path, dpi=300, transparent=True)
+    plt.close()
+    
+    # Jinja2 렌더링
+    env = Environment(loader=FileSystemLoader(str(base_dir / "src" / "templates")))
+    template = env.get_template("report.html")
+    
+    html_content = template.render(
+        date=datetime.datetime.now().strftime("%Y-%m-%d"),
+        best_company=best_company,
+        companies=companies,
+        bar_chart_path=f"file://{bar_chart_path.absolute()}",
+        donut_chart_path=f"file://{donut_chart_path.absolute()}"
+    )
+    
+    # PDF 변환
+    pdf_path = output_dir / "final_report.pdf"
+    HTML(string=html_content, base_url=str(base_dir)).write_pdf(pdf_path)
+    
+    return str(pdf_path)

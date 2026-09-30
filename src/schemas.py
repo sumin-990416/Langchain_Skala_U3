@@ -62,6 +62,11 @@ class ComparisonResult(BaseModel):
     comparison_table: str = ""
 
 # --- Graph State ---
+def reset_or_add(left: List[ProfileResult], right: List[ProfileResult]) -> List[ProfileResult]:
+    if right == []:
+        return []
+    return left + right
+
 class InvestmentAgentState(TypedDict):
     selected_companies: List[Company]
     current_index: int
@@ -76,7 +81,7 @@ class InvestmentAgentState(TypedDict):
     unknown_items: List[str]
     
     domain_scores: Dict[Domain, float]
-    profile_results: Annotated[List[ProfileResult], operator.add]
+    profile_results: Annotated[List[ProfileResult], reset_or_add]
     company_result: Optional[CompanyResult]
     company_results: Annotated[List[CompanyResult], operator.add]
     

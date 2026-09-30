@@ -153,13 +153,8 @@ def run_growth_agent(state: Any) -> ProfileResult:
     # ==========================================
     # [1] 공통 파라미터 및 점수 (70% 반영) - 수정 지양
     # ==========================================
-    profile_id = "성장형"
-    try:
-        config = load_profile_config(profile_id)
-    except KeyError:
-        # 현재 profiles.yaml의 식별자가 growth_focused인 경우에도
-        # growth.py 단독으로 정상 동작하도록 호환합니다.
-        config = load_profile_config("growth_focused")
+    profile_id = "growth_focused"
+    config = load_profile_config(profile_id)
     profile_name = config["name"]
     weights = config["weights"]
     
