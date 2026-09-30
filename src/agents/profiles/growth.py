@@ -10,7 +10,7 @@ def run_growth_agent(state: Any) -> ProfileResult:
     # ==========================================
     # [1] 공통 파라미터 및 점수 (70% 반영) - 수정 지양
     # ==========================================
-    profile_id = "성장형"
+    profile_id = "growth_focused"
     config = load_profile_config(profile_id)
     profile_name = config["name"]
     weights = config["weights"]

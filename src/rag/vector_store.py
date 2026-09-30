@@ -1,16 +1,20 @@
 import os
 from pathlib import Path
 from langchain_community.vectorstores import FAISS
-from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 
 VECTOR_DB_PATH = Path(__file__).parent.parent.parent / "data" / "processed" / "faiss_index"
 
-# 속도와 다국어(한국어/영어) 처리 능력이 탁월한 최신 OpenAI 임베딩 모델 사용
-EMBEDDING_MODEL_NAME = "text-embedding-3-small"
+# 오픈소스 다국어 모델 사용 (교수님 요구사항 및 실습 노트북과 일치)
+EMBEDDING_MODEL_NAME = "intfloat/multilingual-e5-base"
 
 def get_embeddings():
-    return OpenAIEmbeddings(model=EMBEDDING_MODEL_NAME)
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL_NAME,
+        model_kwargs={'device': 'cpu'},
+        encode_kwargs={'normalize_embeddings': True}
+    )
 
 def init_or_load_vector_db() -> FAISS:
     """FAISS 벡터 DB를 로드하거나, 없으면 임시로 빈 DB를 생성합니다."""
