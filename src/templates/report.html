@@ -5,234 +5,197 @@
     <style>
         @page {
             size: A4;
-            margin: 15mm;
+            margin: 20mm;
+            @bottom-center {
+                content: "SKALA 4기 · 울산 3반 · 4조 | PAGE " counter(page);
+                font-size: 10px;
+                color: #888;
+                font-family: 'Malgun Gothic', sans-serif;
+            }
         }
         body {
             font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', sans-serif;
-            color: #333;
+            color: #2c3e50;
             margin: 0;
             padding: 0;
-            font-size: 11px;
+            font-size: 12px;
+            line-height: 1.6;
         }
+
         .header {
-            display: flex;
-            justify-content: space-between;
-            border-bottom: 2px solid #002B5B;
+            border-bottom: 2px solid #34495e;
             padding-bottom: 10px;
-            margin-bottom: 20px;
+            margin-bottom: 30px;
         }
         .header h1 {
-            margin: 0;
-            font-size: 20px;
-            font-weight: normal;
+            margin: 0 0 5px 0;
+            font-size: 24px;
+            color: #2c3e50;
         }
         .header .meta {
-            color: #666;
-            font-size: 10px;
+            color: #7f8c8d;
+            font-size: 11px;
+        }
+
+        .summary-block {
+            margin-bottom: 40px;
+        }
+        .summary-block h2 {
+            font-size: 18px;
+            color: #2980b9;
+            margin-top: 0;
+            margin-bottom: 15px;
+        }
+        .summary-block p {
+            margin: 5px 0;
+            font-size: 14px;
+        }
+        .summary-highlight {
+            font-size: 16px;
+            font-weight: bold;
+            color: #27ae60;
             margin-top: 10px;
         }
-        .summary-section {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 30px;
-        }
-        .summary-text {
-            width: 60%;
-        }
-        .summary-text h2 {
-            font-size: 16px;
-            color: #444;
-            margin-top: 0;
-        }
-        .summary-text p {
-            line-height: 1.6;
-            font-size: 12px;
-        }
-        .summary-box {
-            background-color: #1A2942;
-            color: white;
-            padding: 20px;
-            width: 35%;
-            border-radius: 8px;
-        }
-        .summary-box h3 {
-            margin: 0 0 5px 0;
-            font-size: 10px;
-            color: #99aab5;
-        }
-        .summary-box h2 {
-            margin: 0 0 10px 0;
-            font-size: 24px;
-        }
-        .summary-box p {
-            margin: 0;
-            font-size: 12px;
-        }
-        
-        .kpi-row {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 30px;
-        }
-        .kpi-card {
-            width: 22%;
-            background-color: #F4F6F9;
-            padding: 15px;
-            border-radius: 8px;
-            border-left: 4px solid #4CAF50;
-        }
-        .kpi-card:nth-child(1) { border-left-color: #1976D2; }
-        .kpi-card:nth-child(2) { border-left-color: #4CAF50; }
-        .kpi-card:nth-child(3) { border-left-color: #9C27B0; }
-        .kpi-card:nth-child(4) { border-left-color: #FF9800; }
-        
-        .kpi-card h4 {
-            margin: 0 0 10px 0;
-            color: #666;
-            font-size: 10px;
-        }
-        .kpi-card .value {
-            font-size: 24px;
-            font-weight: bold;
-            color: #1A2942;
-            margin-bottom: 5px;
-        }
-        .kpi-card .sub {
-            font-size: 9px;
-            color: #888;
-        }
-        
-        .charts-row {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 30px;
-        }
-        .chart-box {
-            width: 48%;
-        }
-        .chart-box h3 {
-            font-size: 12px;
-            color: #444;
-            border-bottom: 1px solid #eee;
+
+        .section-title {
+            font-size: 18px;
+            color: #2c3e50;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #bdc3c7;
             padding-bottom: 5px;
         }
-        .chart-img {
-            width: 100%;
-            height: auto;
+
+        .agent-view {
+            margin-bottom: 25px;
+            padding-left: 10px;
         }
-        
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 20px;
+        .agent-view h3 {
+            font-size: 14px;
+            color: #34495e;
+            margin: 0 0 10px 0;
         }
-        th, td {
-            border: 1px solid #ddd;
-            padding: 8px;
-            text-align: center;
+        .agent-view ul {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
         }
-        th {
-            background-color: #1A2942;
-            color: white;
-            font-weight: normal;
+        .agent-view li {
+            margin-bottom: 8px;
+            font-size: 13px;
         }
-        tr:nth-child(even) {
-            background-color: #f9f9f9;
+        .company-name {
+            display: inline-block;
+            width: 200px;
+            font-weight: bold;
+            color: #2c3e50;
         }
-        
-        .footer {
-            margin-top: 50px;
-            border-top: 1px solid #ddd;
-            padding-top: 10px;
-            font-size: 9px;
-            color: #888;
-            text-align: center;
+        .company-score {
+            display: inline-block;
+            width: 80px;
+            font-weight: bold;
+            color: #2980b9;
+        }
+        .decision-pass {
+            color: #27ae60;
+            font-weight: bold;
+        }
+        .decision-fail {
+            color: #c0392b;
+            font-weight: bold;
+        }
+
+        .final-eval {
+            margin-bottom: 30px;
+        }
+        .final-eval h3 {
+            font-size: 15px;
+            color: #2c3e50;
+            margin: 0 0 10px 0;
+        }
+        .final-eval p {
+            margin: 3px 0;
+            font-size: 13px;
+            padding-left: 10px;
+            color: #34495e;
+        }
+        .final-eval strong {
+            color: #2c3e50;
+        }
+
+        .page-break {
+            page-break-before: always;
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>Battery Intelligence 스타트업 투자검토</h1>
-        <div class="meta">PAGE 1 | 기준일 {{ date }}</div>
+        <h1>Battery Intelligence 스타트업 투자검토 요약</h1>
+        <div class="meta">기준일: {{ date }}</div>
     </div>
     
-    <div class="summary-section">
-        <div class="summary-text">
-            <h2>SUMMARY</h2>
-            <p>{{ best_company.company_name }}가 최종 투자지표 {{ best_company.average_score }}점으로 1위다. {{ best_company.summary_reason }}</p>
-        </div>
-        <div class="summary-box">
-            <h3>최종 투자검토</h3>
-            <h2>{{ best_company.final_decision }}</h2>
-            <p>{{ best_company.company_name }} | {{ best_company.average_score }}점</p>
+    <div class="summary-block">
+        <h2>최우선 검토 대상: {{ best_company.company_name }}</h2>
+        <p>{{ best_company.summary_reason }}</p>
+        <p class="summary-highlight">
+            최종 투자 판정: {{ best_company.final_decision }}
+            (최고점: {{ best_company.average_score | round(2) }}점, 근거 충족률: {{ best_company.evidence_coverage | round(2) }}%)
+        </p>
+    </div>
+
+    <div>
+        <h2 class="section-title" style="margin-top:20px;">기업별 최종 지표 요약</h2>
+        <div style="text-align: center; margin-bottom: 20px;">
+            <img src="{{ bar_chart_path }}" style="width: 45%; vertical-align: top; margin-right: 2%;">
+            <img src="{{ donut_chart_path }}" style="width: 45%; vertical-align: top;">
         </div>
     </div>
-    
-    <div class="kpi-row">
-        <div class="kpi-card">
-            <h4>최종 투자지표</h4>
-            <div class="value">{{ best_company.average_score }}</div>
-            <div class="sub">3개사 중 1위</div>
-        </div>
-        <div class="kpi-card">
-            <h4>근거충족률</h4>
-            <div class="value">{{ best_company.evidence_coverage }}%</div>
-            <div class="sub">문서 기반 검증</div>
-        </div>
-        <div class="kpi-card">
-            <h4>관점 편차</h4>
-            <div class="value">{{ best_company.score_std_dev }}</div>
-            <div class="sub">Profile 간 차이</div>
-        </div>
-        <div class="kpi-card">
-            <h4>우선 실사</h4>
-            <div class="value">5개</div>
-            <div class="sub">성능·매출·책임</div>
-        </div>
+
+    <div class="page-break"></div>
+
+    <div class="header">
+        <h1>Battery Intelligence 스타트업 투자검토 세부 결과</h1>
+        <div class="meta">기준일: {{ date }}</div>
     </div>
-    
-    <div class="charts-row">
-        <div class="chart-box">
-            <h3>기업별 최종 투자지표</h3>
-            <img src="{{ bar_chart_path }}" class="chart-img">
-        </div>
-        <div class="chart-box">
-            <h3>근거충족률</h3>
-            <img src="{{ donut_chart_path }}" class="chart-img">
-        </div>
-    </div>
-    
-    <table>
-        <thead>
-            <tr>
-                <th>기업</th>
-                <th>기술</th>
-                <th>시장</th>
-                <th>재무·고객</th>
-                <th>안정성</th>
-                <th>팀·사업</th>
-                <th>최종</th>
-                <th>판정</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for c in companies %}
-            <tr>
-                <td>{{ c.company_name }}</td>
-                <td>{{ c.domain_scores['technology'] | round(1) }}</td>
-                <td>{{ c.domain_scores['market'] | round(1) }}</td>
-                <td>{{ c.domain_scores['finance'] | round(1) }}</td>
-                <td>{{ c.domain_scores['risk'] | round(1) }}</td>
-                <td>{{ c.domain_scores['team'] | round(1) }}</td>
-                <td>{{ c.average_score | round(1) }}</td>
-                <td>{{ c.final_decision }}</td>
-            </tr>
+
+    <h2 class="section-title" style="margin-top:20px;">1. 에이전트 프로필별 상세 평가</h2>
+
+    {% for profile_name, results in profiles_dict.items() %}
+    <div class="agent-view">
+        <h3>▶ {{ profile_name }} 관점</h3>
+        <ul>
+            {% for item in results %}
+            <li>
+                <span class="company-name">- {{ item.company }}</span>
+                <span class="company-score">{{ item.result.weighted_score | round(2) }}점</span>
+                <span class="{% if item.result.recommendation == '투자검토 추천' %}decision-pass{% else %}decision-fail{% endif %}">
+                    [{{ item.result.recommendation }}]
+                </span>
+            </li>
             {% endfor %}
-        </tbody>
-    </table>
-    
-    <div class="footer">
-        SKALA 4기 · 울산 3반 · 4조
+        </ul>
     </div>
+    {% endfor %}
+
+    <h2 class="section-title">2. 최종 종합 평가 상세</h2>
+    
+    {% for c in companies %}
+    <div class="final-eval">
+        <h3>▶ {{ c.company_name }}
+            <span class="{% if c.final_decision == '투자검토 추천' %}decision-pass{% else %}decision-fail{% endif %}" style="font-size: 13px; margin-left: 10px;">
+                [{{ c.final_decision }}]
+            </span>
+        </h3>
+        <p><strong>최종 평균 점수:</strong> {{ c.average_score | round(2) }}점</p>
+        <p><strong>세부 평가 지표:</strong>
+            기술(30%) {{ c.domain_scores['technology'] | round(2) }}점 |
+            시장(20%) {{ c.domain_scores['market'] | round(2) }}점 |
+            재무(20%) {{ c.domain_scores['finance'] | round(2) }}점 |
+            안정성(15%) {{ c.domain_scores['risk'] | round(2) }}점 |
+            사업/팀(15%) {{ c.domain_scores['team'] | round(2) }}점
+        </p>
+    </div>
+    {% endfor %}
+
 </body>
 </html>

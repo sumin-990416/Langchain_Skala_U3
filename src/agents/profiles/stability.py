@@ -5,6 +5,7 @@ from langchain_openai import ChatOpenAI
 
 from ...schemas import ProfileResult
 from ..profile import calculate_profile_score, LLMProfileOutput, load_profile_config
+from ._evidence import check_profile_evidence, attach_evidence_check, profile_decision
 
 
 # 안정형 투자자가 중점적으로 확인할 실사 영역입니다.
@@ -172,6 +173,12 @@ def _format_stability_assessment(
     )
     return "\n".join(lines)
 
+# rubric.yaml의 항목 ID 기준. 담당자가 평가 범위에 맞게 조정할 수 있습니다.
+# 핵심 확인 항목: 재무 지속성, 안전·규제, 데이터 이용 권한
+EVIDENCE_POLICY = {
+    "min_coverage": 80.0,
+    "critical_items": ("fin_01", "rsk_01", "rsk_02"),
+}
 
 def run_stability_agent(state: Any) -> ProfileResult:
     """강도희 팀원이 담당하는 '안정형' 에이전트 커스텀 로직."""
@@ -185,12 +192,24 @@ def run_stability_agent(state: Any) -> ProfileResult:
         config = load_profile_config("안정형")
     profile_name = config["name"]
     weights = config["weights"]
+
+    # 근거 부족이면 공통/커스텀 점수를 계산하지 않고 정상적으로 판단 유보를 반환합니다.
+    evidence_check = check_profile_evidence(state, config, **EVIDENCE_POLICY)
+    if not evidence_check.sufficient:
+        return evidence_check.hold_result(profile_name)
+
     common_score = calculate_profile_score(state["domain_scores"], weights)
 
     # [2] 안정형 커스텀 실사 점수 30%
     validated_evidence = list(state.get("validated_evidence", []))
+    confirmed_source_ids = set(evidence_check.source_ids)
+    confirmed_evidence = [
+        evidence
+        for evidence in validated_evidence
+        if evidence.source_id in confirmed_source_ids
+    ]
     custom_score, stability_breakdown, stability_evidence_ids = (
-        calculate_stability_custom_score(validated_evidence)
+        calculate_stability_custom_score(confirmed_evidence)
     )
     final_score = round((common_score * 0.7) + (custom_score * 0.3), 2)
 
@@ -198,14 +217,7 @@ def run_stability_agent(state: Any) -> ProfileResult:
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     structured_llm = llm.with_structured_output(LLMProfileOutput)
 
-    evidence_text = ""
-    for ev in validated_evidence:
-        evidence_text += (
-            f"- [ID: {ev.item_id}, Source: {ev.source_id}] "
-            f"(등급: {ev.evidence_grade}): {ev.content}\n"
-        )
-    if not evidence_text:
-        evidence_text = "확인된 근거가 없습니다."
+    evidence_text = evidence_check.evidence_text
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """당신은 배터리 AI 스타트업 전문 심사역 '{profile_name}'입니다.
@@ -220,12 +232,14 @@ def run_stability_agent(state: Any) -> ProfileResult:
 2. 제공된 근거 ID만 인용하고 없는 ID나 수치를 만들지 마세요.
 3. 근거가 없는 항목은 부정적 사실로 단정하지 말고 '미확인'으로 기록하세요.
 4. 회사 자체 주장과 독립 검증을 구분하고 A·B등급 근거를 우선하세요.
-5. 최종 점수가 75점 이상이면 '추천', 60~74.99점이면 '조건부 검토',
-   60점 미만이면 '보류'를 기본으로 하되 핵심 항목이 미확인이면 추가 실사 조건을 붙이세요."""),
+5. 코드가 결정한 판정을 변경하지 말고 근거와 한계를 설명하세요.
+6. 미확인 수치를 추정하지 마세요."""),
         ("user", """
 [기업명]: {company_name}
 [최종 산출 점수(공통 70% + 커스텀 30%)]: {final_score} / 100
 [안정형 커스텀 실사 점수]: {custom_score} / 100
+[코드가 결정한 판정]: {decision_text}
+[프로필 근거 충족률]: {coverage_text}%
 
 [안정형 세부 평가]
 {stability_assessment}
@@ -254,11 +268,13 @@ def run_stability_agent(state: Any) -> ProfileResult:
         "stability_assessment": _format_stability_assessment(
             stability_breakdown, stability_evidence_ids
         ),
+        "decision_text": profile_decision(final_score, evidence_check).value,
+        "coverage_text": f"{evidence_check.coverage:.1f}",
         "domain_scores_text": domain_scores_text,
         "evidence_text": evidence_text,
     })
 
-    return ProfileResult(
+    return attach_evidence_check(ProfileResult(
         profile_name=profile_name,
         weighted_score=final_score,
         domain_contributions=result.domain_contributions.model_dump(),
@@ -267,4 +283,4 @@ def run_stability_agent(state: Any) -> ProfileResult:
         unknown_items=result.unknown_items,
         recommendation=result.recommendation,
         due_diligence_questions=result.due_diligence_questions,
-    )
+    ), evidence_check)

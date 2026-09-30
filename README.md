@@ -573,7 +573,17 @@ LANGCHAIN_TRACING_V2=true
 LANGCHAIN_PROJECT=SKALA
 ```
 
-### Step 2. 실행
+### Step 2. 시스템 라이브러리 설치 (PDF 자동 생성용)
+고품질 PDF 리포트를 자동 생성하기 위해 운영체제별로 아래 필수 라이브러리를 설치해주세요.
+- **Mac (Homebrew)**:
+  ```bash
+  brew install pango libffi cairo
+  ```
+- **Windows / Linux (Ubuntu)**:
+  WeasyPrint 공식 문서를 참고하여 Pango 및 Cairo 런타임을 설치해주세요. (Ubuntu: `sudo apt install libpango-1.0-0 libpangoft2-1.0-0`)
+
+### Step 3. 패키지 설치 및 실행
+파이썬 패키지를 설치하고 파이프라인을 실행합니다.
 ```bash
 uv run python main.py
 ```

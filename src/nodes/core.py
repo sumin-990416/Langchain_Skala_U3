@@ -54,7 +54,7 @@ def retrieve_evidence(state: InvestmentAgentState) -> dict:
                 is_direct=True
             )
             retrieved.append(ev)
-            
+
     return {"retrieved_evidence": retrieved}
 
 def validate_evidence(state: InvestmentAgentState) -> dict:
@@ -84,40 +84,67 @@ def score_common(state: InvestmentAgentState) -> dict:
 
 def synthesize_company(state: InvestmentAgentState) -> dict:
     """5개 Agent 결과 종합·최종 투자지표 도출"""
-    scores = [p.weighted_score for p in state.get("profile_results", [])]
+    profiles = state.get("profile_results", [])
+    scores = [p.weighted_score for p in profiles if p.weighted_score is not None]
+    unscored_profiles = [p.profile_name for p in profiles if p.weighted_score is None]
+    rag_holds = [p.profile_name for p in profiles if p.decision == FinalDecision.HOLD_RAG]
+    gate_holds = [p.profile_name for p in profiles if p.decision == FinalDecision.HOLD_GATE]
     
-    avg_score = sum(scores) / len(scores) if scores else 0
-    # 표본 표준편차 계산
+    # 미산출 점수를 0점으로 대체하지 않고, 평가가 완료된 프로필만 집계한다.
+    avg_score = sum(scores) / len(scores) if scores else None
+    # 기존과 동일하게 평가된 프로필 점수의 모집단 표준편차를 계산한다.
     if len(scores) > 1:
         variance = sum((x - avg_score) ** 2 for x in scores) / len(scores)
         std_dev = math.sqrt(variance)
-    else:
+    elif scores:
         std_dev = 0.0
+    else:
+        std_dev = None
         
     coverage = state.get("evidence_coverage", 0)
     
     # 투자 판정 (기획안 C-4)
-    if avg_score >= 75 and coverage >= 80:
+    # 다른 프로필의 높은 점수로 근거 부족·추가 실사 판정이 사라지지 않게 한다.
+    if avg_score is None or unscored_profiles or rag_holds or coverage < 60:
+        decision = FinalDecision.HOLD_RAG
+    elif gate_holds:
+        decision = FinalDecision.HOLD_GATE
+    elif avg_score >= 75 and coverage >= 80:
         decision = FinalDecision.RECOMMEND
     elif avg_score >= 60 or (60 <= coverage < 80):
         decision = FinalDecision.CONDITIONAL
     else:
         decision = FinalDecision.HOLD_SCORE
         
-    if coverage < 60:
-        decision = FinalDecision.HOLD_RAG
-
     company = state["current_company"].name if state.get("current_company") else "Unknown"
+
+    if avg_score is None:
+        summary = "평가 가능한 프로필 점수가 없어 점수 없음 / 판단 유보"
+    elif unscored_profiles:
+        summary = (
+            f"전체 {len(profiles)}개 중 평가 완료 {len(scores)}개 프로필의 참고 평균 "
+            f"{avg_score:.1f}점 (편차 {std_dev:.1f}); 전체 평가가 완료되지 않아 판단 유보"
+        )
+    else:
+        summary = f"다수 프로필 종합 결과, 평균 {avg_score:.1f}점 (편차 {std_dev:.1f})"
+    if unscored_profiles:
+        summary += f". 점수 미산출 {len(unscored_profiles)}개: {', '.join(unscored_profiles)}"
+    if rag_holds:
+        summary += f". 근거 부족 판단 유보 프로필: {', '.join(rag_holds)}"
+    if gate_holds:
+        summary += f". 추가 실사 필요 프로필: {', '.join(gate_holds)}"
+    if coverage < 60:
+        summary += f". 공통 근거 충족률 {coverage:.1f}%로 판단 유보"
     
     company_result = CompanyResult(
         company_name=company,
         domain_scores=state.get("domain_scores", {}),
         evidence_coverage=coverage,
-        profile_results=state.get("profile_results", []),
+        profile_results=profiles,
         average_score=avg_score,
         score_std_dev=std_dev,
         final_decision=decision.value,
-        summary_reason=f"다수 프로필 종합 결과, 평균 {avg_score:.1f}점 (편차 {std_dev:.1f})"
+        summary_reason=summary
     )
     return {"company_result": company_result}
 
@@ -127,21 +154,42 @@ def save_company_result(state: InvestmentAgentState) -> dict:
     # company_results (Annotated reducer)에 누적
     return {"company_results": [res], "current_index": idx + 1, "profile_results": []} # 리스트 클리어 트릭 필요하지만 지금은 reducer가 처리
 
+def _format_score(score: float | None, suffix: str = "") -> str:
+    """미산출은 숫자나 0점 대신 명시적인 문구로 표시한다."""
+    return "점수 없음" if score is None else f"{score:.1f}{suffix}"
+
+
+def _has_partial_scores(company: CompanyResult) -> bool:
+    return company.average_score is not None and any(
+        profile.weighted_score is None for profile in company.profile_results
+    )
+
+
 def compare_companies(state: InvestmentAgentState) -> dict:
     companies = state.get("company_results", [])
     
     table = "| 기업 | 기술 | 시장 | 재무 | 안정성 | 팀·사업 | 근거충족률 | 최종 점수 | 판정 |\n"
     table += "|---|---|---|---|---|---|---|---|---|\n"
     for c in companies:
+        average_label = _format_score(c.average_score)
+        if _has_partial_scores(c):
+            average_label += " (일부 프로필 참고 평균)"
         table += (
             f"| {c.company_name} "
-            f"| {c.domain_scores.get(Domain.TECHNOLOGY, 0):.1f} "
-            f"| {c.domain_scores.get(Domain.MARKET, 0):.1f} "
-            f"| {c.domain_scores.get(Domain.FINANCE, 0):.1f} "
-            f"| {c.domain_scores.get(Domain.RISK, 0):.1f} "
-            f"| {c.domain_scores.get(Domain.TEAM, 0):.1f} "
+            f"| {_format_score(c.domain_scores.get(Domain.TECHNOLOGY))} "
+            f"| {_format_score(c.domain_scores.get(Domain.MARKET))} "
+            f"| {_format_score(c.domain_scores.get(Domain.FINANCE))} "
+            f"| {_format_score(c.domain_scores.get(Domain.RISK))} "
+            f"| {_format_score(c.domain_scores.get(Domain.TEAM))} "
             f"| {c.evidence_coverage:.1f}% "
-            f"| {c.average_score:.1f} "
+            f"| {average_label} "
+            f"| {c.domain_scores.get(Domain.TECHNOLOGY, 0):.2f} "
+            f"| {c.domain_scores.get(Domain.MARKET, 0):.2f} "
+            f"| {c.domain_scores.get(Domain.FINANCE, 0):.2f} "
+            f"| {c.domain_scores.get(Domain.RISK, 0):.2f} "
+            f"| {c.domain_scores.get(Domain.TEAM, 0):.2f} "
+            f"| {c.evidence_coverage:.2f}% "
+            f"| {c.average_score:.2f} "
             f"| {c.final_decision} |\n"
         )
         
@@ -156,29 +204,71 @@ def generate_report(state: InvestmentAgentState) -> dict:
     # 1. 마크다운 리포트 생성
     report = f"""# 투자 심사 요약 보고서 (Multi-Agent RAG)
 
-## SUMMARY (종합 요약)
-본 보고서는 배터리 AI 스타트업 3개사에 대한 다각적 투자 심사 결과를 담고 있습니다.
+## 1. 프로필 에이전트별 투자 검토 의견
+다양한 투자 성향을 가진 5개의 에이전트가 평가한 결과입니다.
+"""
+    # 에이전트 관점별로 기업 묶기
+    profiles_dict = {}
+    for c in comp.companies:
+        for p in c.profile_results:
+            if p.profile_name not in profiles_dict:
+                profiles_dict[p.profile_name] = []
+            profiles_dict[p.profile_name].append((c.company_name, p))
 
-## 1. 종합 비교표
+    for profile_name, results in profiles_dict.items():
+        report += f"\n### {profile_name} 관점\n"
+        for company_name, p in results:
+            report += f"- **{company_name}**: {p.weighted_score:.2f}점 ({p.recommendation})\n"
+            # due_diligence_questions 나 상세 내용 추가 가능
+
+    report += f"""
+## 2. 최종 종합 투자 지표 및 결론
+모든 에이전트의 의견을 종합한 최종 결과입니다.
+
+### 종합 비교표
 {comp.comparison_table}
 
-## 2. 기업별 상세
+### 기업별 종합 상세
 """
     for c in comp.companies:
         report += f"\n### {c.company_name} ({c.final_decision})\n"
-        report += f"- **평균 점수**: {c.average_score:.1f}점 (표준편차: {c.score_std_dev:.1f})\n"
+        average_title = "일부 프로필 참고 평균" if _has_partial_scores(c) else "평균 점수"
+        report += f"- **{average_title}**: {_format_score(c.average_score, '점')}"
+        if c.average_score is not None and c.score_std_dev is not None:
+            report += f" (표준편차: {c.score_std_dev:.1f})"
+        report += "\n"
         report += f"- **근거 충족률**: {c.evidence_coverage:.1f}%\n"
         report += f"- **최종 요약**: {c.summary_reason}\n\n"
-        
+
         report += "#### Profile Agent 결과\n"
         for p in c.profile_results:
-            report += f"- **{p.profile_name}**: {p.weighted_score:.1f}점 - {p.recommendation}\n"
-            
+            decision = p.decision
+            if p.weighted_score is None:
+                decision = FinalDecision.HOLD_RAG
+            report += f"\n##### {p.profile_name}\n\n"
+            report += f"- **평가 결과**: {_format_score(p.weighted_score, '점')}"
+            if decision is not None:
+                report += f" / {decision.value}"
+            report += "\n"
+            if p.evidence_coverage is not None:
+                report += f"- **프로필 근거 충족률**: {p.evidence_coverage:.1f}%\n"
+            if p.unknown_items:
+                report += "- **미확인 항목**: " + "; ".join(p.unknown_items) + "\n"
+            if p.due_diligence_questions:
+                report += "\n**추가 확인 질문**\n\n"
+                report += "".join(f"- {question}\n" for question in p.due_diligence_questions)
+            report += f"\n{p.recommendation}\n"
+
         report += "\n#### 사업 리스크 및 한계점\n"
         report += "- 문서 기반 분석 중 발견된 일부 리스크 및 미확인 요소\n"
-        
+
         report += "\n#### 팀 및 경영진\n"
         report += "- 핵심 인력 전문성 확인\n"
+        report += f"\n#### {c.company_name} ({c.final_decision})\n"
+        report += f"- **평균 점수**: {c.average_score:.2f}점 (에이전트 간 편차: {c.score_std_dev:.2f})\n"
+        report += f"- **근거 충족률**: {c.evidence_coverage:.2f}%\n"
+        report += f"- **최종 요약**: {c.summary_reason}\n"
+        report += f"- **발견된 리스크 및 한계점**: 문서 기반 분석 중 발견된 리스크 요인들 검토 필요\n"
 
     report += "\n## REFERENCE (참고 자료)\n"
     report += "- ACCURE_RAG_source_pack.pdf\n"
@@ -198,7 +288,7 @@ def generate_report(state: InvestmentAgentState) -> dict:
             print(f"🎉 고품질 PDF 보고서가 생성되었습니다: {pdf_path}")
     except Exception as e:
         print(f"PDF 생성 중 오류 발생 (환경에 따라 Pango/Cairo 필요할 수 있음): {e}")
-        
+
     return {"report_draft": report, "report_errors": []}
 
 def validate_report(state: InvestmentAgentState) -> dict:

@@ -26,7 +26,7 @@ console = Console()
 def test_environment():
     """test_env.py 의 기능을 메인에 통합하여 환경 점검을 수행합니다."""
     console.print("\n[bold yellow]🔍 1단계: API 및 환경 변수 점검[/bold yellow]")
-    
+
     # 1. OpenAI 체크
     try:
         from langchain_openai import ChatOpenAI
@@ -69,7 +69,7 @@ def select_files_via_gui() -> list:
 def prepare_data_directory():
     """GUI로 파일을 선택받아 data/raw/ 폴더를 준비합니다."""
     console.print("[bold yellow]📂 2단계: 분석 대상 문서 로드[/bold yellow]")
-    
+
     raw_dir = Path(__file__).parent / "data" / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     
@@ -173,7 +173,12 @@ def main():
                     res = node_state.get("company_result")
                     if res:
                         color = "green" if "추천" in res.final_decision or "RECOMMEND" in res.final_decision else "red"
-                        console.print(f" ➔ ⚖️ [bold {color}]최종 투자 판정:[/bold {color}] {res.final_decision} ({res.average_score:.1f}점)")
+                        score_text = "점수 없음" if res.average_score is None else f"{res.average_score:.1f}점"
+                        if res.average_score is not None and any(
+                            p.weighted_score is None for p in res.profile_results
+                        ):
+                            score_text += " · 일부 프로필 참고 평균"
+                        console.print(f" ➔ ⚖️ [bold {color}]최종 투자 판정:[/bold {color}] {res.final_decision} ({score_text})")
                 
                 elif node_name == "compare_companies":
                     console.print(" ➔ 📊 기업 비교 및 최종 테이블 작성 완료")
@@ -189,14 +194,20 @@ def main():
                     
         progress.update(task_id, description="[bold green]Multi-Agent 파이프라인 실행 완료![/bold green]")
 
-    report_path = Path(__file__).parent / "output" / "final_multi_agent_report.md"
-    console.print("\n" + "="*50)
-    console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
+    md_report_path = Path(__file__).parent / "output" / "final_multi_agent_report.md"
+    pdf_report_path = Path(__file__).parent / "output" / "final_report.pdf"
 
-    # 5. 보고서 자동 실행 (Mac OS 기준 open 명령어)
-    if report_path.exists():
-        console.print("\n[bold cyan]📄 생성된 투자 보고서를 자동으로 엽니다...[/bold cyan]")
-        os.system(f"open '{report_path}'")
+    console.print("\n" + "="*50)
+
+    if pdf_report_path.exists():
+        console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{pdf_report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
+        console.print("\n[bold cyan]📄 생성된 PDF 보고서를 자동으로 엽니다...[/bold cyan]")
+        os.system(f"open '{pdf_report_path}'")
+    else:
+        console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{md_report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
+        if md_report_path.exists():
+            console.print("\n[bold cyan]📄 생성된 마크다운 보고서를 자동으로 엽니다...[/bold cyan]")
+            os.system(f"open '{md_report_path}'")
 
 if __name__ == "__main__":
     main()

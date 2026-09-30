@@ -4,6 +4,10 @@ import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 from jinja2 import Environment, FileSystemLoader
+
+# Mac(Apple Silicon)에서 Homebrew로 설치한 라이브러리를 WeasyPrint가 찾을 수 있도록 환경변수 강제 주입
+os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = "/opt/homebrew/lib:/usr/local/lib:" + os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+
 from weasyprint import HTML
 
 def generate_pdf_report(comparison_result):
@@ -18,9 +22,9 @@ def generate_pdf_report(comparison_result):
     if not companies:
         return None
         
-    # 점수 기준으로 정렬
-    companies_sorted = sorted(companies, key=lambda x: x.average_score, reverse=True)
-    best_company = companies_sorted[0]
+    # 미산출 점수는 순위에 포함하지 않는다.
+    scored_companies = [c for c in companies if c.average_score is not None]
+    best_company = max(scored_companies, key=lambda c: c.average_score, default=None)
     
     # 한글 폰트 설정 (Mac)
     plt.rcParams['font.family'] = 'AppleGothic'
@@ -30,17 +34,20 @@ def generate_pdf_report(comparison_result):
     bar_chart_path = images_dir / "bar_chart.png"
     plt.figure(figsize=(6, 3))
     names = [c.company_name for c in companies]
-    scores = [c.average_score for c in companies]
+    scores = [c.average_score if c.average_score is not None else 0 for c in companies]
     y_pos = np.arange(len(names))
     
     colors = ['#1976D2', '#4CAF50', '#9C27B0']
     plt.barh(y_pos, scores, color=colors, height=0.5)
     plt.yticks(y_pos, names)
+    plt.xlim(0, 110)
     plt.gca().invert_yaxis()  # 상위 항목이 위에 오도록
     
     # 레이블 추가
-    for i, v in enumerate(scores):
-        plt.text(v + 1, i, f"{v:.1f}", va='center')
+    for i, company in enumerate(companies):
+        score = company.average_score
+        label = "점수 없음" if score is None else f"{score:.1f}"
+        plt.text(1 if score is None else score + 1, i, label, va='center')
         
     plt.box(False)
     plt.tight_layout()
@@ -66,6 +73,14 @@ def generate_pdf_report(comparison_result):
     plt.savefig(donut_chart_path, dpi=300, transparent=True)
     plt.close()
     
+    # 에이전트 관점별 분류
+    profiles_dict = {}
+    for c in companies:
+        for p in c.profile_results:
+            if p.profile_name not in profiles_dict:
+                profiles_dict[p.profile_name] = []
+            profiles_dict[p.profile_name].append({'company': c.company_name, 'result': p})
+
     # Jinja2 렌더링
     env = Environment(loader=FileSystemLoader(str(base_dir / "src" / "templates")))
     template = env.get_template("report.html")
@@ -74,6 +89,7 @@ def generate_pdf_report(comparison_result):
         date=datetime.datetime.now().strftime("%Y-%m-%d"),
         best_company=best_company,
         companies=companies,
+        profiles_dict=profiles_dict,
         bar_chart_path=f"file://{bar_chart_path.absolute()}",
         donut_chart_path=f"file://{donut_chart_path.absolute()}"
     )
