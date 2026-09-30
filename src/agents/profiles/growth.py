@@ -381,7 +381,16 @@ def run_growth_agent(state: Any) -> ProfileResult:
         "evidence_text": evidence_text
     })
     
-    return ProfileResult(
+    supporting_evidence_ids = list(dict.fromkeys(
+        growth_evaluation.supporting_evidence_ids
+        + result.supporting_evidence_ids
+    ))
+    unknown_items = list(dict.fromkeys(
+        growth_evaluation.unknown_items
+        + result.unknown_items
+    ))
+
+    return attach_evidence_check(ProfileResult(
         profile_name=profile_name,
         weighted_score=final_score,
         domain_contributions=result.domain_contributions.model_dump(),
