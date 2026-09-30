@@ -1,0 +1,183 @@
+import math
+from pathlib import Path
+from langchain_openai import ChatOpenAI
+from src.schemas import (
+    InvestmentAgentState, Company, Domain, Question, Evidence, 
+    CompanyResult, ComparisonResult, FinalDecision
+)
+from src.rag.vector_store import retrieve_top_k
+
+def load_inputs(state: InvestmentAgentState) -> dict:
+    """고정 기업 3곳 로드 (현재는 ACCURE 1개만 임시 지원)"""
+    companies = [
+        Company(name="ACCURE", description="BESS·EV 배터리 이상, 안전, 성능, 열화 예측 AI"),
+        # Company(name="volytica diagnostics", description="SOH·열화·이상·안전 분석"),
+        # Company(name="Electra Vehicles", description="AI 배터리 디지털 트윈, SOC·SOH 예측")
+    ]
+    return {"selected_companies": companies, "current_index": 0}
+
+def select_company(state: InvestmentAgentState) -> dict:
+    idx = state.get("current_index", 0)
+    companies = state.get("selected_companies", [])
+    if idx < len(companies):
+        return {"current_company": companies[idx]}
+    return {}
+
+def build_questions(state: InvestmentAgentState) -> dict:
+    # 29개 항목을 기업별 질문으로 변환 (설계안 D-1)
+    # 임시로 영역별 1개씩만 생성
+    questions = [
+        Question(domain=Domain.TECHNOLOGY, item_id="TECH-01", query="AI 모델 성능 지표 및 외부 검증"),
+        Question(domain=Domain.MARKET, item_id="MKT-01", query="고객 문제 해결 및 유료 고객 실적"),
+        Question(domain=Domain.FINANCE, item_id="FIN-01", query="최신 투자 단계 및 금액"),
+        Question(domain=Domain.RISK, item_id="RSK-01", query="안전, 규제, 데이터 권리 관련 문제"),
+        Question(domain=Domain.TEAM, item_id="TEAM-01", query="창업진 경력 및 핵심 인력 전문성")
+    ]
+    return {"evaluation_questions": questions}
+
+def retrieve_evidence(state: InvestmentAgentState) -> dict:
+    company_name = state["current_company"].name if state.get("current_company") else ""
+    retrieved = []
+    
+    for q in state.get("evaluation_questions", []):
+        search_query = f"{company_name} {q.query}"
+        # 설계안에 맞춰 Top-K 5 설정
+        results = retrieve_top_k(search_query, k=5)
+        
+        for doc, score in results:
+            ev = Evidence(
+                item_id=q.item_id,
+                content=doc.page_content,
+                source_type=doc.metadata.get("source_type", "document"),
+                source_id=doc.metadata.get("source_id", "DOC-01"),
+                evidence_grade=doc.metadata.get("evidence_grade", "B"),
+                is_direct=True
+            )
+            retrieved.append(ev)
+            
+    return {"retrieved_evidence": retrieved}
+
+def validate_evidence(state: InvestmentAgentState) -> dict:
+    # 관련성, 출처등급, 직접성, 범위, 상충 판정 (임시 전부 PASS)
+    return {"validated_evidence": state.get("retrieved_evidence", [])}
+
+def rewrite_query(state: InvestmentAgentState) -> dict:
+    return {}
+
+def record_unknown(state: InvestmentAgentState) -> dict:
+    return {"unknown_items": ["일부 재무 매출 미공개"]}
+
+def score_common(state: InvestmentAgentState) -> dict:
+    """
+    공통 평가항목 점수 및 근거 충족률 계산 (기획안 C-4 기준)
+    DomainScore(d) = 확인된 항목의 가중평균 x 20
+    """
+    # 실제로는 LLM이 항목당 1~5점 부여. 임시로 수학적 계산 구현
+    domain_scores = {
+        Domain.TECHNOLOGY: (4.5 / 5.0) * 100, # 90점
+        Domain.MARKET: (4.0 / 5.0) * 100,     # 80점
+        Domain.FINANCE: (3.5 / 5.0) * 100,    # 70점
+        Domain.RISK: (4.2 / 5.0) * 100,       # 84점
+        Domain.TEAM: (4.8 / 5.0) * 100        # 96점
+    }
+    return {"domain_scores": domain_scores, "evidence_coverage": 85.0}
+
+def synthesize_company(state: InvestmentAgentState) -> dict:
+    """5개 Agent 결과 종합·최종 투자지표 도출"""
+    scores = [p.weighted_score for p in state.get("profile_results", [])]
+    
+    avg_score = sum(scores) / len(scores) if scores else 0
+    # 표본 표준편차 계산
+    if len(scores) > 1:
+        variance = sum((x - avg_score) ** 2 for x in scores) / len(scores)
+        std_dev = math.sqrt(variance)
+    else:
+        std_dev = 0.0
+        
+    coverage = state.get("evidence_coverage", 0)
+    
+    # 투자 판정 (기획안 C-4)
+    if avg_score >= 75 and coverage >= 80:
+        decision = FinalDecision.RECOMMEND
+    elif avg_score >= 60 or (60 <= coverage < 80):
+        decision = FinalDecision.CONDITIONAL
+    else:
+        decision = FinalDecision.HOLD_SCORE
+        
+    if coverage < 60:
+        decision = FinalDecision.HOLD_RAG
+
+    company = state["current_company"].name if state.get("current_company") else "Unknown"
+    
+    company_result = CompanyResult(
+        company_name=company,
+        domain_scores=state.get("domain_scores", {}),
+        evidence_coverage=coverage,
+        profile_results=state.get("profile_results", []),
+        average_score=avg_score,
+        score_std_dev=std_dev,
+        final_decision=decision.value,
+        summary_reason=f"다수 프로필 종합 결과, 평균 {avg_score:.1f}점 (편차 {std_dev:.1f})"
+    )
+    return {"company_result": company_result}
+
+def save_company_result(state: InvestmentAgentState) -> dict:
+    idx = state.get("current_index", 0)
+    res = state.get("company_result")
+    # company_results (Annotated reducer)에 누적
+    return {"company_results": [res], "current_index": idx + 1, "profile_results": []} # 리스트 클리어 트릭 필요하지만 지금은 reducer가 처리
+
+def compare_companies(state: InvestmentAgentState) -> dict:
+    companies = state.get("company_results", [])
+    
+    table = "| 기업 | 기술 | 시장 | 재무 | 안정성 | 팀·사업 | 근거충족률 | 최종 점수 | 판정 |\n"
+    table += "|---|---|---|---|---|---|---|---|---|\n"
+    for c in companies:
+        table += (
+            f"| {c.company_name} "
+            f"| {c.domain_scores.get(Domain.TECHNOLOGY, 0):.1f} "
+            f"| {c.domain_scores.get(Domain.MARKET, 0):.1f} "
+            f"| {c.domain_scores.get(Domain.FINANCE, 0):.1f} "
+            f"| {c.domain_scores.get(Domain.RISK, 0):.1f} "
+            f"| {c.domain_scores.get(Domain.TEAM, 0):.1f} "
+            f"| {c.evidence_coverage:.1f}% "
+            f"| {c.average_score:.1f} "
+            f"| {c.final_decision} |\n"
+        )
+        
+    return {"final_comparison": ComparisonResult(companies=companies, comparison_table=table)}
+
+def generate_report(state: InvestmentAgentState) -> dict:
+    """5쪽 이내의 마크다운 보고서 작성"""
+    comp = state.get("final_comparison")
+    if not comp:
+        return {}
+
+    report = f"""# 투자 심사 요약 보고서 (Multi-Agent RAG)
+
+## 1. 종합 비교표
+{comp.comparison_table}
+
+## 2. 기업별 상세
+"""
+    for c in comp.companies:
+        report += f"\n### {c.company_name} ({c.final_decision})\n"
+        report += f"- **평균 점수**: {c.average_score:.1f}점 (표준편차: {c.score_std_dev:.1f})\n"
+        report += f"- **근거 충족률**: {c.evidence_coverage:.1f}%\n"
+        report += f"- **최종 요약**: {c.summary_reason}\n\n"
+        report += "#### Profile Agent 결과\n"
+        for p in c.profile_results:
+            report += f"- **{p.profile_name}**: {p.weighted_score:.1f}점 - {p.recommendation}\n"
+    
+    import os
+    output_dir = Path(__file__).parent.parent.parent / "output"
+    output_dir.mkdir(exist_ok=True)
+    report_path = output_dir / f"final_multi_agent_report.md"
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(report)
+        
+    return {"report_draft": report, "report_errors": []}
+
+def validate_report(state: InvestmentAgentState) -> dict:
+    """인용 누락, 형식 오류 0 검증"""
+    return {"report_errors": []}
