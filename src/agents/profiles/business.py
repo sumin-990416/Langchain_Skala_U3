@@ -20,58 +20,53 @@ def run_business_agent(state: Any) -> ProfileResult:
     
     # ==========================================
     # [2] 팀원 커스텀 평가 로직 (30% 반영) - 자유롭게 수정!
-    # ==========================================
-    # TODO: [정수민]님, 근거(validated_evidence)나 도메인 점수를 활용해 
-    # 사업성중심형에 맞는 독자적인 커스텀 점수(0~100)를 산출하세요.
     # 1. 재무 및 시장 도메인 가중 평가 (최대 30점)
-    # 평균 70점 미만이면 아예 0점 처리 (매우 엄격)
     market_score = state.get("domain_scores", {}).get(Domain.MARKET, 0)
     finance_score = state.get("domain_scores", {}).get(Domain.FINANCE, 0)
     avg_biz_score = (market_score + finance_score) / 2
     
-    if avg_biz_score < 70.0:
-        biz_base_points = 0.0
+    # 평균 60점 이상부터 점수를 제대로 부여 (기본적인 사업성은 갖춰야 함)
+    if avg_biz_score < 60.0:
+        biz_base_points = (avg_biz_score / 100.0) * 15.0 # 낮은 점수는 절반만 인정
     else:
-        biz_base_points = min(30.0, ((avg_biz_score - 70) / 30.0) * 30.0)
+        biz_base_points = min(30.0, (avg_biz_score / 100.0) * 30.0)
     
     # 2. 확실한 '돈 버는' 비즈니스 근거 유무 (최대 40점)
-    strong_biz_keywords = ["매출", "계약", "수익", "유료 고객", "arr", "mrr", "흑자", "상용화"]
-    negative_biz_keywords = ["적자", "지연", "불확실", "개선 필요", "위험", "한계", "우려"]
+    strong_biz_keywords = ["매출", "계약", "수익", "유료", "고객", "b2b", "상용화"]
+    risk_keywords = ["적자", "지연", "불확실", "개선 필요"]
     
     strong_evidence_count = 0
-    negative_evidence_count = 0
+    risk_evidence_count = 0
     
     for ev in state.get("validated_evidence", []):
         content_lower = ev.content.lower()
         
-        # 긍정 팩트는 출처 신뢰도가 높은(A, B급) 경우에만 인정!
-        if getattr(ev, "evidence_grade", "C") in ["A", "B"]:
-            if any(kw in content_lower for kw in strong_biz_keywords):
-                strong_evidence_count += 1
+        if any(kw in content_lower for kw in strong_biz_keywords):
+            strong_evidence_count += 1
+            if getattr(ev, "evidence_grade", "C") in ["A", "B"]:
+                strong_evidence_count += 1 # A/B급이면 가중치 부여 (총 2번 카운트)
                 
         # 리스크(부정적 팩트) 발견 시 감점 카운트
-        if any(kw in content_lower for kw in negative_biz_keywords):
-            negative_evidence_count += 1
+        if any(kw in content_lower for kw in risk_keywords):
+            risk_evidence_count += 1
                 
-    # A/B급의 확실한 돈 버는 근거 1개당 20점 (최대 40점)
-    evidence_points = min(40.0, strong_evidence_count * 20.0)
+    # 긍정 근거 1포인트당 10점 (최대 40점)
+    evidence_points = min(40.0, strong_evidence_count * 10.0)
     
-    # 3. 리스크 페널티 감점 (제한 없이 건당 -15점 깎음)
-    penalty_points = negative_evidence_count * 15.0
+    # 3. 리스크 페널티 감점 (건당 -5점)
+    penalty_points = risk_evidence_count * 5.0
     
     # 4. 사업 실행력(TEAM) 평가 반영 (최대 30점)
-    # 실행력(팀) 점수가 70점 미만이면 가차없이 0점
     team_score = state.get("domain_scores", {}).get(Domain.TEAM, 0)
-    team_points = min(30.0, max(0.0, (team_score - 70.0) / 30.0) * 30.0)
+    team_points = min(30.0, (team_score / 100.0) * 30.0)
     
     # 총 커스텀 점수 합산
     custom_score = biz_base_points + evidence_points + team_points - penalty_points
     
-    # [극단적 과락 시스템 💀]
-    # 1) A/B급의 수익/계약 근거가 단 한 개도 없다면 무조건 0점 처리
-    # 2) 재무/시장 평균 점수가 65점 미만이면 무조건 0점 처리
-    if strong_evidence_count == 0 or avg_biz_score < 65:
-        custom_score = 0.0
+    # [소프트 과락 시스템]
+    # 매출/계약/수익 등 사업적 키워드가 하나도 발견되지 않았다면 총점에서 20점 감점 (0점 처리는 아님)
+    if strong_evidence_count == 0:
+        custom_score -= 20.0
         
     custom_score = round(max(0.0, min(100.0, custom_score)), 2)
     
