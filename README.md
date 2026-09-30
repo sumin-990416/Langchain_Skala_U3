@@ -1,167 +1,450 @@
-# 배터리 AI 스타트업 투자평가: 설계·구현 발표 자료
+# Battery Intelligence 스타트업 투자평가 Multi-Agent RAG
 
 > SKALA 4기 · 울산 3반 · 4조  
-> 평가 기준에 맞춰 LangChain, LangGraph, Agentic RAG의 설계 의도와 현재 구현 상태를 설명한다. 이 문서는 저장소의 현재 코드를 기준으로 작성했으며, **구현된 기능과 아직 설계 단계인 기능을 구분한다.**
+> LangGraph 기반 Multi-Agent + Agentic RAG 투자평가 시스템
 
-## 1. 문제 정의: 왜 이 시스템이 필요한가
+## 1. 프로젝트 한 줄 소개
 
-배터리 AI 스타트업을 투자 관점에서 비교하려면 SOC·SOH·RUL 예측, 고객 도입, 매출, 안전성, 데이터 이용 권한, 팀의 실행력까지 검토해야 한다. 하지만 기업마다 공개한 지표와 시험 조건이 다르고, 회사의 주장과 독립적인 검증 자료가 섞여 있다. 예를 들어 두 기업이 모두 높은 예측 정확도를 주장하더라도 배터리 화학계, 표본 수, 예측 시점이 다르면 그 수치를 직접 비교하기 어렵다.
+배터리 AI 스타트업의 공개자료를 RAG로 검색하고, 동일한 근거를 **기술·안정·성장·균형·사업성의 5개 투자 관점**으로 병렬 평가하여 근거 기반 투자보고서를 생성합니다.
 
-이에 ACCURE Battery Intelligence, volytica diagnostics, Electra Vehicles의 문서에서 **판단에 필요한 근거를 검색**하고, **다섯 투자 관점으로 각각 평가**한 뒤, **기업별 비교와 미확인 사항을 보고서로 전달**하도록 설계했다. 공개자료가 없는 항목은 임의의 사실로 채우지 않고 추가 실사 대상으로 남기는 것이 목표다.
+이 프로젝트의 핵심은 단순히 LLM에게 투자 여부를 질문하는 것이 아닙니다.
 
-## 2. LangChain·LangGraph·Agentic RAG의 역할 분담
+1. 평가에 사용할 근거를 먼저 수집합니다.
+2. 공통 기준과 투자자 유형별 기준을 분리해 평가합니다.
+3. 근거가 부족하면 억지로 점수를 만들지 않고 `판단 유보`로 남깁니다.
+4. 최종 결과를 5페이지 이내의 차트 포함 PDF로 출력합니다.
 
-| 기술 | 이 프로젝트에서 맡은 일 | 주요 코드 |
+---
+
+## 2. 문제 정의
+
+배터리 AI 기업은 다음과 같은 이유로 직접 비교하기 어렵습니다.
+
+- SOC·SOH·RUL 등 기업마다 제시하는 기술지표가 다릅니다.
+- 같은 정확도라도 시험 조건, 배터리 화학계, 데이터 규모가 다릅니다.
+- 회사의 홍보자료와 독립 검증자료가 함께 검색됩니다.
+- 매출, 계약, 고객 유지율처럼 비상장기업이 공개하지 않는 정보가 많습니다.
+- 기술력이 높더라도 안정성 또는 사업성이 부족할 수 있습니다.
+
+따라서 하나의 종합 프롬프트가 모든 판단을 수행하면 관점이 섞이고, 공개되지 않은 정보를 추정할 위험이 있습니다. 이를 해결하기 위해 **근거 수집과 투자 판단을 분리**하고, 투자 판단을 다시 **5개 전문 Agent**로 분할했습니다.
+
+---
+
+## 3. 핵심 차별점
+
+### 차별점 1. 하나의 점수가 아니라 5개의 투자 관점
+
+모든 Agent가 같은 근거를 사용하지만 중요하게 보는 기준은 다릅니다.
+
+| Agent | 핵심 관점 | 주요 확인 내용 |
 |---|---|---|
-| LangChain | PDF/TXT 로딩, 청킹, 임베딩, FAISS 검색, LLM 프롬프트와 구조화 출력 | [`src/rag/ingest.py`](src/rag/ingest.py), [`src/rag/vector_store.py`](src/rag/vector_store.py), [`src/agents/profile.py`](src/agents/profile.py) |
-| LangGraph | State를 통한 데이터 전달, 노드 실행 순서, 조건부 분기, 기업 반복, 다섯 Agent 병렬 실행 | [`src/graph.py`](src/graph.py), [`src/schemas.py`](src/schemas.py) |
-| RAG | 현재 기업과 평가 질문에 관련된 문서 청크를 검색해 Agent의 판단 입력으로 전달 | [`src/nodes/core.py`](src/nodes/core.py) |
-| Agentic RAG 설계 | 근거가 부족하면 질의를 바꾸어 재검색하고, 한도에 도달하면 미확인으로 기록하는 피드백 흐름 | [`src/graph.py`](src/graph.py)의 조건부 경로 |
-| Pydantic | 근거, Agent 결과, 기업별 결과의 필드와 자료형 정의 | [`src/schemas.py`](src/schemas.py) |
+| 기술중심형 | 기술의 실제 검증 수준 | 예측 성능, 독립 검증, 데이터 경쟁력, BMS/ESS 연동, 일반화, 기술 방어력 |
+| 안정형 | 손실 가능성과 지속 가능성 | 안전·규제, 재무 지속성, 데이터 이용 권한, 제조물책임 |
+| 성장형 | 성장 속도와 확장 가능성 | 시장 성장률, 유료 전환, ARR 성장, 확장성, 데이터 네트워크 효과 |
+| 균형형 | 영역 간 연결성 | 기술-시장 적합성, 시장-수익 전환성, 기술-리스크 양립성, 팀-사업 실행력 |
+| 사업성중심형 | 실제 돈을 버는 구조 | 수익모델, 고객·계약, 상용화, 팀의 사업 실행력 |
 
-설계의 핵심은 **근거 수집**과 **투자 판단**의 분리다. 다섯 Agent는 서로 다른 자료를 임의로 수집하는 대신 공통 검색 결과를 받고, 투자 성향에 따라 이를 해석한다. 현재 코드에서는 기본 검색과 병렬 평가 경로가 연결되어 있다. 근거 부족에 따른 자동 재검색은 그래프의 경로만 존재하며 아직 실제로 작동하지 않는다.
+이 구조를 통해 “기술은 좋지만 수익모델이 약한 기업”과 “성장은 빠르지만 안전·규제 위험이 큰 기업”을 서로 다른 관점으로 설명할 수 있습니다.
 
-## 3. 문서 적재와 임베딩 모델 선택
+### 차별점 2. 공통 평가 70% + 유형별 독립 평가 30%
 
-`main.py`는 입력 문서를 준비한 뒤 `ingest_documents()`를 호출한다. 현재 적재 코드는 `data/raw/`의 PDF와 TXT를 읽는다. LangChain의 `PyPDFLoader`·`TextLoader`로 본문을 가져오고, `RecursiveCharacterTextSplitter`로 **500자 청크와 50자 중첩**을 만든다. 청크가 지나치게 길어 검색 결과가 흐려지는 것을 줄이면서 문장 경계의 문맥을 일부 유지하려는 설정이다. 이후 임베딩을 계산해 FAISS 인덱스로 저장한다.
+각 Agent의 최종점수는 다음 구조를 사용합니다.
 
-**실제 적용된 임베딩 모델은 오픈소스 `intfloat/multilingual-e5-base`다.** `HuggingFaceEmbeddings`를 CPU에서 실행하고 임베딩을 정규화한다. 다국어 문서 검색과 별도 GPU 없이 실행할 수 있는 구성을 목표로 했다. 다만 모델 간 Hit@5·MRR@5 비교 수치는 저장소에서 확인되지 않으므로, 검색 품질의 우수성이 실험으로 입증되었다고 말할 수는 없다. 기존 README에서 OpenAI `text-embedding-3-small`을 실제 최종 모델로 소개한 내용은 현재 코드와 다르다.
+```text
+공통 프로필 점수 = Σ(기술·시장·재무·리스크·팀 점수 × Agent별 영역 가중치)
 
-문서 메타데이터에는 출처 유형·등급·기업명 등을 담으려 했으나, 현재 적재 코드는 문서를 기본적으로 **B등급·직접 근거**로 표시한다. 문서의 실제 신뢰도나 기업 직접성을 검증해 붙이는 기능은 없다. 출처 ID·원본 페이지·URL을 보고서까지 일관되게 전달하는 작업도 남아 있다.
+Agent 최종점수 = 공통 프로필 점수 × 70%
+                + Agent별 독립 세부점수 × 30%
+```
 
-## 4. Evidence RAG: 질문 생성부터 근거 전달까지
+- **공통 70%**는 모든 Agent가 기업의 기본적인 투자 매력을 같은 틀에서 평가하게 합니다.
+- **유형별 30%**는 각 Agent의 목적에 맞는 별도 파라미터로 계산합니다.
+- 유형별 30%는 공통 점수를 다시 복사하거나 재가중한 값이 아니라, 각 관점에 맞게 독립적으로 평가합니다.
 
-기업을 선택하면 `build_questions()`가 기술·시장·재무·안정성·팀 영역의 질문을 만든다. **현재 공통 검색 단계의 질문은 영역별 1개씩 총 5개**다. 별도 `configs/rubric.yaml`에는 **11개 세부 항목**이 정의되어 있고, 일부 프로필 내부의 근거 충족 검사에 사용된다. README에 제시된 29개 항목이 공통 검색에서 모두 실행되는 상태는 아니다.
+예를 들어 성장형 Agent의 30%는 시장 성장, 고객 전환, 매출 성장, 확장성, 데이터 네트워크 효과, 실행역량으로 구성됩니다. 기술형 Agent는 예측 성능과 검증 신뢰성을 중심으로 별도의 기술 점수를 만듭니다.
 
-각 질문에 대한 현재 실행 순서는 다음과 같다.
+### 차별점 3. 근거 부족을 0점으로 처리하지 않음
 
-1. `현재 기업명 + 평가 질문`으로 검색문을 만든다.
-2. FAISS에서 유사한 문서 청크 **Top-5**를 찾는다.
-3. 검색된 본문과 질문 ID·출처 정보를 `Evidence` 객체로 변환한다.
-4. 결과를 `validated_evidence`로 전달해 Agent가 사용한다.
+공개자료가 없다는 것은 성과가 나쁘다는 뜻이 아닙니다. 따라서 미확인 항목을 0점으로 바꾸지 않습니다.
 
-설계한 검증 기준은 질문과의 관련성, 대상 기업과의 직접성, 출처 등급, 성능 수치의 시험 조건, 자료 간 상충 여부다. 근거가 부족하면 질의를 수정해 재검색하고, 최대 횟수 이후에도 확인되지 않으면 미확인으로 기록하려 했다. **현재 공통 `validate_evidence()`는 검색 결과를 그대로 통과시키며 `rewrite_query()`는 아무 질의도 바꾸지 않는다.** `route_evidence_check()`도 근거가 항상 충분하다고 가정한다. 따라서 이 부분은 완성된 자동 피드백 루프가 아니라 확장을 위해 마련한 Graph 구조다.
+| 근거 상태 | 처리 방식 |
+|---|---|
+| 충분한 직접 근거 | 항목 평가 및 점수 산출 |
+| 일부 근거만 확인 | 항목별 상태 기록, 종합점수 산출 조건 확인 |
+| 핵심 지표 미확인 | `weighted_score=None`, 판단 유보 |
+| 평가 대상이 아님 | `NOT_APPLICABLE`, 충족률 분모에서 제외 |
+| 상충 근거 존재 | 반대 근거로 기록하고 추가 실사 요청 |
 
-프로필 내부에는 별도의 확인 로직이 있다. 기술형은 LLM이 인용한 문구가 실제 입력 청크에 있는지 검사하고, 다른 세 프로필이 공유하는 근거 검사도 항목별 답·인용·상충 여부를 확인한다. 이 검사는 **인용문이 입력 청크에 있다는 사실**을 확인한다. 원출처의 사실성이나 독립 검증 여부까지 자동으로 보증하지는 않는다.
+판단 유보가 발생해도 Graph를 중단하지 않습니다. 해당 Agent의 점수는 미산출로 유지하고, 부족한 근거와 추가 실사 질문을 최종 보고서의 **근거 부족 및 판단 유보** 항목에 표시합니다.
 
-## 5. LangGraph Workflow·Loop·Branch
+---
 
-`InvestmentAgentState`에는 현재 기업, 질문, 검색 결과, 검증 결과, 영역 점수, 프로필별 결과, 기업별 결과와 보고서가 구분되어 있다. 노드는 필요한 상태 필드만 갱신한다. `profile_results`는 병렬 Agent 결과를 모으는 reducer를, `company_results`는 기업별 결과를 쌓는 reducer를 사용한다.
+## 4. 전체 시스템 구조
 
 ```mermaid
 flowchart TD
-    A[기업 3곳 로드] --> B[현재 기업 선택]
-    B --> C[평가 질문 생성]
-    C --> D[FAISS Top-5 검색]
-    D --> E[근거 검증]
-    E --> F{근거 충분?}
-    F -->|충분: 현재 경로| G[공통 영역 점수]
-    F -->|부족: 설계 경로| H[질의 재작성]
-    H --> D
-    F -->|재시도 한도: 설계 경로| I[미확인 기록]
-    I --> G
-    G --> J[Send로 5개 Agent 병렬 실행]
-    J --> K[기업별 결과 종합]
-    K --> L{남은 기업?}
-    L -->|있음| B
-    L -->|없음| M[기업 비교와 보고서 생성]
-    M --> N[보고서 검증]
-    N -->|오류: 설계 경로| M
-    N -->|통과| O[종료]
+    A[PDF/TXT 입력] --> B[문서 로딩 및 청킹]
+    B --> C[multilingual-e5-base 임베딩]
+    C --> D[FAISS Vector DB]
+    D --> E[기업별 평가 질문 생성]
+    E --> F[관련 근거 Top-K 검색]
+    F --> G[근거 검증]
+    G --> H[공통 5개 영역 평가]
+    H --> I{Send: 5개 Agent 병렬 실행}
+    I --> T[기술중심형]
+    I --> S[안정형]
+    I --> R[성장형]
+    I --> B2[균형형]
+    I --> M[사업성중심형]
+    T --> J[기업별 결과 종합]
+    S --> J
+    R --> J
+    B2 --> J
+    M --> J
+    J --> K{남은 기업?}
+    K -->|있음| E
+    K -->|없음| L[기업 비교]
+    L --> N[Markdown 및 PDF 보고서]
 ```
 
-`Send`는 동일한 `profile_agent` 노드를 다섯 프로필 입력으로 병렬 실행한다. 결과를 모아 한 기업의 평균과 편차를 계산하고, 결과를 저장한 뒤 다음 기업으로 돌아간다. 이 **기업 반복 경로**는 코드에 연결되어 있다. 반면 **근거 재검색 분기**와 **보고서 오류 수정 루프**는 각각 충분성 판단과 오류 검사가 임시 처리이므로 실효성이 없다.
+### 기술별 역할
 
-## 6. 다섯 Profile Agent의 책임과 데이터 흐름
+| 기술 | 역할 |
+|---|---|
+| LangChain | 문서 로딩, 청킹, 임베딩, FAISS 검색, 프롬프트 및 구조화 출력 |
+| LangGraph | State 관리, 실행 순서, 조건 분기, 기업 반복, 5개 Agent 병렬 실행 |
+| Pydantic | Evidence, ProfileResult, CompanyResult 등 결과 스키마 검증 |
+| FAISS | 평가 질문과 관련된 문서 청크 검색 |
+| ReportLab / WeasyPrint | 차트 및 PDF 투자보고서 출력 |
 
-| Agent | 중점 평가 | 기술 | 시장 | 재무 | 안정성 | 팀·사업 |
-|---|---|---:|---:|---:|---:|---:|
-| 기술중심형 | 예측 성능·검증 신뢰성·데이터·BMS/ESS 연동 | 35% | 20% | 10% | 15% | 20% |
-| 안정형 | 안전·규제·재무 지속성·데이터 권리 | 15% | 15% | 30% | 30% | 10% |
-| 성장형 | 시장 성장·고객 전환·확장성 | 20% | 35% | 15% | 10% | 20% |
-| 균형형 | 다섯 영역과 영역 간 연결성 | 20% | 20% | 20% | 20% | 20% |
-| 사업성중심형 | 수익모델·고객·계약·팀 실행력 | 15% | 25% | 20% | 10% | 30% |
+### 실제 코드로 보는 LangChain
 
-프로필 이름과 가중치는 [`configs/profiles.yaml`](configs/profiles.yaml)에 있다. `profile_agent_node()`가 이름에 따라 담당 구현 파일로 보내고, 각 Agent는 공통 `ProfileResult` 형태로 점수, 판정, 찬성·반대 근거 ID, 미확인 항목, 실사 질문을 반환하도록 설계되었다. 이 프로젝트의 Agent 협업은 **같은 근거를 받은 병렬 평가와 결과 종합**이다. Agent끼리 토론하거나 다수결 투표로 합의하는 단계는 구현되어 있지 않다.
+#### 1. 문서 로딩과 청킹
 
-현재 프로필 점수는 영역 가중치만 다르게 적용하는 방식이 아니다. 각 프로필에 별도 세부 평가가 추가된다.
+[`src/rag/ingest.py`](src/rag/ingest.py)에서 LangChain Loader로 PDF/TXT를 읽고 `RecursiveCharacterTextSplitter`로 검색 단위를 만듭니다.
+
+```python
+if file.suffix.lower() == ".pdf":
+    loader = PyPDFLoader(str(file))
+elif file.suffix.lower() == ".txt":
+    loader = TextLoader(str(file), encoding="utf-8")
+
+loaded_docs = loader.load()
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,
+    chunk_overlap=50,
+    separators=["\n\n", "\n", ".", " ", ""],
+)
+split_docs = text_splitter.split_documents(docs)
+```
+
+발표 포인트는 “PDF 전체를 LLM에 넣는 것이 아니라, 의미 검색이 가능한 500자 단위 청크로 나눈다”는 것입니다. 50자 overlap은 청크 경계에서 문맥이 끊기는 문제를 줄입니다.
+
+#### 2. 임베딩과 FAISS 검색
+
+[`src/rag/vector_store.py`](src/rag/vector_store.py)에서 다국어 E5 임베딩을 만들고, 질문과 의미적으로 가까운 문서를 검색합니다.
+
+```python
+def get_embeddings():
+    return HuggingFaceEmbeddings(
+        model_name="intfloat/multilingual-e5-base",
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+
+results = db.similarity_search_with_score(query, k=k)
+```
+
+단순 키워드 일치가 아니라 질문과 청크를 벡터로 변환해 의미적으로 가까운 근거를 가져옵니다. 검색 결과는 이후 Agent가 사용하는 `Evidence` 객체로 변환됩니다.
+
+#### 3. 프롬프트와 구조화 출력
+
+성장형 Agent는 LangChain의 `ChatPromptTemplate`과 Pydantic 구조화 출력을 연결합니다.
+
+```python
+growth_scoring_llm = llm.with_structured_output(GrowthCustomEvaluation)
+
+growth_scoring_prompt = ChatPromptTemplate.from_messages([
+    ("system", "제공된 검증 근거만 사용해 성장형 지표를 평가하세요."),
+    ("user", "기업명: {company_name}\n근거: {evidence_text}"),
+])
+
+growth_evaluation = (
+    growth_scoring_prompt | growth_scoring_llm
+).invoke({
+    "company_name": company_name,
+    "evidence_text": evidence_text,
+})
+```
+
+`prompt | llm`은 LangChain Runnable 파이프라인입니다. 자유 형식 문자열이 아니라 `GrowthCustomEvaluation` 형태로 결과를 받아 상태, 점수, 근거 ID와 미확인 항목을 안정적으로 후속 노드에 전달합니다.
+
+### 실제 코드로 보는 LangGraph
+
+#### 1. State와 reducer
+
+[`src/schemas.py`](src/schemas.py)의 State는 전체 Graph가 공유하는 데이터 계약입니다.
+
+```python
+class InvestmentAgentState(TypedDict):
+    current_company: Optional[Company]
+    validated_evidence: List[Evidence]
+    domain_scores: Dict[Domain, float]
+    profile_results: Annotated[List[ProfileResult], reset_or_add]
+    company_results: Annotated[List[CompanyResult], operator.add]
+    final_comparison: Optional[ComparisonResult]
+```
+
+각 노드는 전체 객체를 직접 수정하지 않고 필요한 필드만 반환합니다. `profile_results`의 reducer는 병렬 실행된 다섯 Agent 결과를 하나의 리스트로 합칩니다.
+
+#### 2. `Send`를 이용한 5개 Agent 병렬 실행
+
+[`src/graph.py`](src/graph.py)의 `route_to_profiles()`가 프로필마다 하나의 `Send`를 만듭니다.
+
+```python
+def route_to_profiles(state: InvestmentAgentState):
+    return [
+        Send("profile_agent", {
+            "profile_name": profile,
+            "domain_scores": state.get("domain_scores", {}),
+            "validated_evidence": state.get("validated_evidence", []),
+            "current_company": state.get("current_company"),
+        })
+        for profile in get_all_profiles()
+    ]
+```
+
+이 코드가 공통 점수와 동일한 검증 근거를 기술·안정·성장·균형·사업성 Agent에 동시에 전달합니다. Agent별 결과는 앞서 정의한 reducer로 다시 모입니다.
+
+#### 3. 조건 분기와 기업 반복
+
+```python
+workflow.add_conditional_edges(
+    "score_common",
+    route_to_profiles,
+    ["profile_agent"],
+)
+
+workflow.add_conditional_edges(
+    "save_company_result",
+    route_next_company,
+    {
+        "select_company": "select_company",
+        "compare_companies": "compare_companies",
+    },
+)
+```
+
+첫 번째 조건부 edge는 5개 Agent 병렬 평가를 시작합니다. 두 번째 조건부 edge는 아직 평가하지 않은 기업이 있으면 `select_company`로 돌아가고, 모든 기업이 끝나면 비교 단계로 이동합니다.
+
+근거 재검색 분기도 Graph에 정의되어 있지만, 현재 `route_evidence_check()`가 임시로 항상 충분하다고 처리합니다. 발표에서는 **조건 분기 구조는 구현했고, 근거 충분성에 따른 자동 질의 재작성은 개선 과제**라고 구분해 설명합니다.
+
+---
+
+## 5. RAG 파이프라인
+
+### 문서 처리
 
 ```text
-공통 프로필 점수 = Σ(영역 점수 × 해당 Agent의 영역 가중치)
-Agent 최종점수 = 공통 프로필 점수 × 0.70 + Agent별 세부 점수 × 0.30
+data/raw 문서
+→ PDF/TXT 로딩
+→ 500자 단위 청킹, 50자 overlap
+→ intfloat/multilingual-e5-base 임베딩
+→ FAISS 인덱스 저장
 ```
 
-기술형은 세부 점수 안에서 **예측 성능 30%, 검증 신뢰성 25%, 데이터 경쟁력 25%, 현장 연동성 20%**를 사용한다. 유효한 원문 인용이 없거나 핵심 근거가 상충하면 점수를 내지 않는다. 회사 주장만 있는 경우 2점, 독립 검증이 부족한 경우 4점으로 상한을 둔다. 핵심 지표가 빠졌거나 가중 근거 충족률이 80%에 미치지 못하면 `None`과 판단 유보를 반환한다.
+`multilingual-e5-base`는 한국어와 영문이 혼합된 기업·시장 자료를 로컬 CPU 환경에서도 처리할 수 있어 선택했습니다. 임베딩을 정규화하여 의미 기반 검색의 일관성을 확보했습니다.
 
-프로필의 자료 부족 처리는 아직 통일되지 않았다. 일부 균형형·성장형 조건에서는 판단 유보 결과 대신 예외가 발생해 전체 Graph 실행이 중단될 수 있다. 안정형은 근거 문서의 신뢰도와 기업의 안정성을 같은 점수로 취급할 수 있고, 사업성형은 “매출 없음”처럼 부정적인 문장에 포함된 키워드도 긍정 근거로 가산할 수 있다. 따라서 역할 분리는 구현되었지만 **각 Agent 채점의 의미가 타당한지**는 추가 검증이 필요하다.
+| 설정 | 실제 적용값 |
+|---|---|
+| 제공 모델 | Hugging Face `intfloat/multilingual-e5-base` |
+| LangChain 클래스 | `langchain_community.embeddings.HuggingFaceEmbeddings` |
+| 실행 장치 | CPU |
+| 벡터 정규화 | `normalize_embeddings=True` |
+| Vector Store | FAISS |
+| 검색 방식 | `similarity_search_with_score` |
 
-## 7. 평가 기준·최종 판정
-
-설계상 공통 평가는 기술·시장·재무·안정성·팀의 다섯 영역을 1~5점 세부 척도로 평가하고, 확인된 항목의 가중평균을 100점으로 변환한다. 미확인을 낮은 성과로 단정하지 않는 것이 원칙이다.
+OpenAI는 투자평가와 구조화 출력에 사용하는 LLM이며, 문서 임베딩에는 사용하지 않습니다. 즉 역할은 다음과 같이 구분됩니다.
 
 ```text
-설계한 영역 점수 = 확인된 세부 항목의 가중평균 × 20
-기업 최종지표 = 산출된 Agent 점수의 평균
-관점 차이 = 산출된 Agent 점수의 표준편차
+문서 임베딩·검색: multilingual-e5-base + FAISS
+투자평가·구조화 출력: OpenAI gpt-4o-mini
 ```
 
-종합 노드는 미산출 Agent가 있거나 근거 부족 판정이 있으면 최종 판단을 유보하고, 추가 실사 판정도 높은 평균점수로 덮어쓰지 않도록 구성되어 있다. 점수 75점 이상과 공통 근거 충족률 80% 이상을 추천 기준으로 사용한다.
+### 근거 중심 평가
 
-**현재 공통 점수 계산은 임시값이다.** `score_common()`이 기업·검색 근거와 관계없이 기술 90, 시장 80, 재무 70, 안정성 84, 팀 96점 및 근거 충족률 85%를 반환한다. Agent 점수의 70%가 이 값에 의존하므로, 저장된 숫자를 기업별 실측 평가 결과로 제시해서는 안 된다.
-
-## 8. 보고서 설계와 현재 산출물
-
-Graph는 세 기업의 결과를 모아 Markdown과 PDF 보고서를 작성하도록 연결되어 있다. 보고서의 목적은 기업 간 점수·판정과 Agent별 이견을 보여주고, 미확인 사항을 다음 실사 질문으로 연결하는 것이다. 기존 [`output/final_multi_agent_report.md`](output/final_multi_agent_report.md)와 `output/final_report.pdf`가 저장되어 있다.
-
-현재 산출물에는 검증 한계가 있다. 기존 보고서의 세 기업은 공통 영역점수, 충족률 **85%**, 최종점수 **83.53점**이 같다. 공통 점수가 고정값이므로 이 결과만으로 실제 기업 간 차이를 입증하기 어렵다. 근거 ID와 원문·페이지를 보고서 주장에 역으로 연결하는 기능도 부족하다. 기존 PDF는 README의 **5쪽 이내** 목표와 달리 17쪽이다.
-
-현재 생성 코드에도 비교표의 **9열 헤더와 16열 데이터 행** 불일치가 있고, Agent 점수가 `None`이면 일부 숫자 서식에서 오류가 난다. 보고서 검증 노드는 항상 오류가 없다고 반환한다. 따라서 기존 파일의 존재와 **현재 코드로 새 보고서를 안정적으로 재생성할 수 있는지**는 별도로 확인해야 한다.
-
-## 9. 프로젝트 구성과 실행 재현성
+검색된 자료는 `Evidence` 객체로 변환됩니다.
 
 ```text
-main.py                    실행 진입점: 환경 확인 → 파일 준비 → 인덱싱 → Graph 실행
-configs/profiles.yaml      프로필 이름·영역 가중치·평가 초점
-configs/rubric.yaml        세부 평가 질문과 판정 설정
-src/schemas.py             Evidence, ProfileResult, CompanyResult, Graph State
-src/rag/ingest.py          문서 로딩·청킹·FAISS 인덱스 생성
-src/rag/vector_store.py    임베딩 모델 설정·FAISS 검색
-src/agents/profile.py      프로필 라우팅과 공통 점수 함수
-src/agents/profiles/       다섯 Agent의 세부 평가
-src/nodes/core.py          질문·검색·종합·보고서 노드
-src/graph.py               LangGraph 노드와 엣지
-src/report_generator.py    PDF 생성
-output/                    생성된 보고서
+item_id          평가항목 ID
+content          검색된 원문 청크
+source_id        출처 식별자
+evidence_grade   근거 등급
+is_direct        대상 기업과의 직접 관련 여부
 ```
 
-README의 권장 실행 명령은 다음과 같다. OpenAI LLM 호출에는 `OPENAI_API_KEY`가 필요하다.
+Agent는 입력된 근거만 사용하도록 제한되며, 인용한 문장이 실제 검색 청크에 존재하는지도 확인합니다. 확인되지 않은 정보는 `unknown_items`와 `due_diligence_questions`로 분리합니다.
+
+---
+
+## 6. LangGraph 설계 포인트
+
+### State 기반 연결
+
+`InvestmentAgentState`가 기업, 질문, 검색 근거, 공통 점수, Agent 결과와 보고서를 단계별로 전달합니다.
+
+### 병렬 Agent 실행
+
+공통 평가가 끝나면 LangGraph의 `Send`를 사용해 동일한 근거와 공통 점수를 5개 Agent에 전달합니다. 각 Agent 결과는 reducer를 통해 `profile_results`에 누적됩니다.
+
+### 기업 반복
+
+한 기업의 5개 평가가 끝나면 결과를 저장하고 다음 기업으로 돌아갑니다. 모든 기업이 끝난 뒤에만 기업 비교와 보고서 생성을 수행합니다.
+
+### 판단 유보의 전파
+
+어떤 Agent가 근거 부족으로 점수를 만들지 못하더라도 예외로 종료하지 않습니다.
+
+```text
+Agent 판단 유보
+→ ProfileResult(weighted_score=None)
+→ 기업 종합 단계에서 미산출 Agent 확인
+→ 최종 판정 '근거 부족 판단 유보'
+→ 보고서에 부족 근거와 추가 요청 자료 표시
+```
+
+높은 일부 점수가 근거 부족 판정을 덮어쓰지 못하도록 한 것이 중요한 설계 포인트입니다.
+
+---
+
+## 7. 주요 데이터 모델
+
+```python
+class ProfileResult(BaseModel):
+    profile_name: str
+    weighted_score: Optional[float]
+    decision: Optional[FinalDecision]
+    evidence_coverage: Optional[float]
+    supporting_evidence_ids: List[str]
+    contrary_evidence_ids: List[str]
+    unknown_items: List[str]
+    recommendation: str
+    due_diligence_questions: List[str]
+```
+
+`weighted_score`를 `Optional`로 설계해 점수 없음과 0점을 구분합니다. 이 값은 종합 단계와 보고서까지 그대로 유지됩니다.
+
+---
+
+## 8. 투자 보고서 핵심 포인트
+
+최종 보고서는 점수만 보여주는 결과표가 아니라, 투자자가 다음 행동을 결정할 수 있는 자료를 목표로 합니다.
+
+1. 기업별 공통 영역점수와 산출 가능한 Agent 점수를 비교합니다.
+2. 추천·조건부·보류·판단 유보를 구분합니다.
+3. 일부 Agent만 산출된 평균은 **참고 평균**으로 표시합니다.
+4. 근거가 부족한 Agent와 핵심 항목을 별도 카테고리로 보여줍니다.
+5. 추가로 받아야 할 매출, ARR, 계약, 성능 검증 원자료를 실사 질문으로 연결합니다.
+6. 5페이지 이내의 차트 포함 PDF로 핵심 결과를 압축합니다.
+
+> 점수가 높아 보이는 것보다, 어떤 근거로 그 점수가 만들어졌고 무엇을 아직 모르는지 보여주는 것이 더 중요합니다.
+
+---
+
+## 9. 프로젝트 구조
+
+```text
+main.py                          전체 실행 진입점
+configs/profiles.yaml            5개 Agent의 영역 가중치와 평가 초점
+configs/rubric.yaml              공통 평가 질문
+src/schemas.py                   State 및 구조화 결과 모델
+src/graph.py                     LangGraph 노드·분기·병렬·반복 연결
+src/rag/ingest.py                문서 로딩, 청킹, 임베딩
+src/rag/vector_store.py          FAISS 저장 및 검색
+src/agents/profile.py            5개 Agent 라우팅
+src/agents/profiles/             Agent별 독립 30% 평가
+src/agents/profiles/_evidence.py 공통 근거 충족 검사
+src/nodes/core.py                검색, 공통 평가, 종합, 보고서 노드
+src/report_generator.py          차트와 PDF 생성
+src/templates/report.html        PDF 보고서 템플릿
+output/                          최종 Markdown/PDF 보고서
+```
+
+---
+
+## 10. 실행 방법
 
 ```bash
+uv sync
 uv run python main.py
 ```
 
-실행 진입점에는 파일 선택 GUI와 macOS의 보고서 자동 열기 동작이 있다. 의존성 선언과 `uv.lock`은 있지만, 평가 산식·Graph 분기·인용 연결·보고서 출력을 자동 검증하는 테스트는 충분하지 않다. 기존 산출물은 현재 코드 버전의 전체 실행 성공을 증명하지 않으므로, 발표 시 **코드에서 확인한 동작**과 **재실행으로 검증한 결과**를 구분한다.
+프로젝트 루트의 `.env`에는 `OPENAI_API_KEY`가 필요합니다. 기존 `data/raw` 문서를 그대로 사용할 경우 파일 선택 질문에 `n`을 입력합니다.
 
-## 10. 평가항목 대응표
+```text
+output/final_multi_agent_report.md
+output/final_report.pdf
+```
 
-| 구분 | 평가항목 | 적용 근거 | 남은 과제 |
-|---|---|---|---|
-| 설계 | 문제 정의 | 1절: 비교가 어려운 이유와 분석 대상 | 개선 성공 기준의 정량화 |
-| 설계 | Agent 설계 | 2·6절: 역할, 책임, 가중치, 데이터 흐름 | 프로필별 중복·판정 기준 정리 |
-| 설계 | RAG 설계 | 3·4절: 문서, 검색, 검증·재검색 설계 | 질문·출처·실행 경로의 일치 |
-| 설계 | Embedding 모델 선택 | 3절: 실제 E5 적용 이유와 방식 | README 모델명 수정, 검색 품질 비교 |
-| 설계 | 평가 기준 설계 | 6·7절: 영역, 1~5점, 가중치와 판정 | 임계값 근거와 실제 채점 연결 |
-| 설계 | State Schema 설계 | 5절: 단계별 상태와 reducer | 미사용 필드와 출처 메타데이터 정리 |
-| 설계 | Graph 설계 | 5절: Workflow, Branch, Loop, Send | 근거·보고서 분기의 실제 동작 |
-| 설계 | 보고서 구조 설계 | 8절: 기업 비교, 프로필 의견, PDF | 인용·분량 검증과 실사 질문 전달 |
-| 개발 | 설계 구현 충실도 | 3~9절: 설계 개념을 코드 모듈로 분리 | 설명과 실제 동작의 불일치 해소 |
-| 개발 | Agent 구현 | 6절: 다섯 구현과 구조화된 결과 | 점수 의미·미산출 처리 통일 |
-| 개발 | RAG Pipeline 구현 | 3·4절: 로딩부터 FAISS 검색까지 | 공통 검증, 재검색, 출처 추적 |
-| 개발 | 코드 구조 및 프로젝트 구성 | 9절: 모듈·설정·진입점 분리 | 임시 로직 정리와 테스트 추가 |
-| 개발 | 실행 결과 재현성 | 9절: 실행 명령과 의존성 | 현재 코드의 전체 재실행 검증 |
-| 개발 | Output: 보고서 | 8절: Markdown·PDF 산출물 | 실제 근거 인용·표 형식·`None` 처리 |
-| 개발 | Output: README | 이 문서의 설계·구현·한계 구분 | 기존 README의 과장되거나 오래된 설명 수정 |
+---
 
-## 발표용 설명
+## 11. 구현 범위와 개선 방향
 
-> 배터리 AI 기업은 공개한 기술 지표와 시험 조건이 달라 직접 비교하기 어렵습니다. 저희는 먼저 LangChain으로 문서를 읽고 청킹·임베딩한 뒤, FAISS에서 기업별 평가 질문에 관련된 근거를 찾도록 구성했습니다. LangGraph는 검색, 다섯 Agent의 병렬 평가, 기업 반복, 보고서 생성을 하나의 State 흐름으로 관리합니다. 다섯 Agent는 같은 근거를 기술·안정·성장·균형·사업성 관점에서 해석합니다. 현재 문서 검색과 Agent 분리, 병렬 실행 구조는 구현되어 있습니다. 다만 공통 점수는 임시값이고 자동 재검색과 공통 근거 검증은 아직 완성되지 않았습니다. 따라서 기존 보고서 점수를 실측 투자평가 결과라고 주장하지 않고, 근거를 추적할 수 있는 평가 파이프라인으로 완성하기 위해 남은 작업을 함께 설명하겠습니다.
+### 구현 완료
+
+- 문서 로딩·청킹·E5 임베딩·FAISS 저장 및 검색
+- LangGraph 기반 기업 반복과 5개 Agent 병렬 실행
+- 프로필별 영역 가중치와 독립 세부평가
+- 공통 70% + 유형별 30% 결합
+- 근거 부족 시 점수 미산출 및 판단 유보
+- 판단 유보를 포함한 기업 종합
+- Markdown 및 차트 포함 PDF 보고서 생성
+
+### 추가 개선
+
+- 현재 임시 공통 영역점수를 실제 근거 기반 항목별 채점으로 교체
+- 공통 근거 검증 결과에 따른 질의 재작성·재검색 루프 완성
+- 출처 URL·페이지·claim ID를 보고서까지 연결
+- Agent별 산식과 임계값에 대한 평가 데이터 구축
+- 전체 Graph와 PDF 결과에 대한 자동화 테스트 추가
+
+현재 `score_common()`의 영역점수는 파이프라인 연결 검증을 위한 임시값입니다. 따라서 개별 숫자를 실제 투자결론으로 과장하기보다, **근거 기반 Multi-Agent 평가 구조와 판단 유보 처리 방식**을 핵심 개발 성과로 설명합니다.
+
+---
+
+## 12. Lessons Learned
+
+### 1. Multi-Agent의 핵심은 Agent 수가 아니라 평가 책임의 분리였다
+
+각 Agent가 무엇을 평가하고, 어떤 독립 파라미터로 30%를 계산하며, 어떤 결과 형식으로 반환하는지를 명확히 해야 했습니다.
+
+### 2. `unknown`과 0점은 완전히 다르다
+
+확인된 일부 항목만 100점으로 환산하면 기업 전체가 충분히 검증된 것처럼 보입니다. 근거 충족률과 핵심 지표 조건을 추가하고, 부족하면 점수를 산출하지 않도록 변경했습니다.
+
+### 3. RAG는 검색보다 근거 검증과 추적이 더 어려웠다
+
+관련 문서를 찾는 것만으로는 투자 근거가 되지 않습니다. 대상 기업의 직접 자료인지, 회사 주장인지 독립 검증인지, 인용문이 원문에 있는지를 확인해야 했습니다.
+
+### 4. 병렬 결과는 공통 스키마가 있어야 합칠 수 있다
+
+`ProfileResult`와 `FinalDecision`을 공통 계약으로 사용하면서 미산출 결과도 동일한 흐름으로 처리할 수 있었습니다.
+
+### 5. 보고서는 마지막 출력이 아니라 평가 로직의 일부였다
+
+보고서까지 판단 유보와 미확인 항목을 표현할 수 있어야 평가 로직이 완성된다는 점을 배웠습니다.
+
+---
+
+## 13. 발표 결론
+
+저희 팀은 투자평가를 하나의 LLM 판단으로 처리하지 않고, **Evidence RAG → 공통 평가 → 5개 관점별 독립 평가 → 종합 → 보고서**의 흐름으로 구현했습니다.
+
+가장 강조하고 싶은 차별점은 다음 세 가지입니다.
+
+1. **5개 전문 Agent가 동일한 근거를 서로 다른 투자 관점으로 평가합니다.**
+2. **공통 70%와 유형별 독립 점수 30%로 일관성과 전문성을 함께 확보합니다.**
+3. **근거가 부족하면 0점이나 추정값을 만들지 않고 판단 유보와 추가 실사로 연결합니다.**
+
+이 구조는 배터리 스타트업뿐 아니라 공개정보가 불완전한 다른 비상장기업 투자평가에도 확장할 수 있습니다.
