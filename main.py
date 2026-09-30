@@ -173,7 +173,12 @@ def main():
                     res = node_state.get("company_result")
                     if res:
                         color = "green" if "추천" in res.final_decision or "RECOMMEND" in res.final_decision else "red"
-                        console.print(f" ➔ ⚖️ [bold {color}]최종 투자 판정:[/bold {color}] {res.final_decision} ({res.average_score:.1f}점)")
+                        score_text = "점수 없음" if res.average_score is None else f"{res.average_score:.1f}점"
+                        if res.average_score is not None and any(
+                            p.weighted_score is None for p in res.profile_results
+                        ):
+                            score_text += " · 일부 프로필 참고 평균"
+                        console.print(f" ➔ ⚖️ [bold {color}]최종 투자 판정:[/bold {color}] {res.final_decision} ({score_text})")
                 
                 elif node_name == "compare_companies":
                     console.print(" ➔ 📊 기업 비교 및 최종 테이블 작성 완료")

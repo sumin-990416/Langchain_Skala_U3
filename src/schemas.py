@@ -39,7 +39,17 @@ class Evidence(BaseModel):
 
 class ProfileResult(BaseModel):
     profile_name: str = Field(description="기술·안정·성장·균형·사업 중 하나")
-    weighted_score: float = Field(description="해당 Profile 가중치를 적용한 0~100점")
+    weighted_score: Optional[float] = Field(
+        default=None, ge=0, le=100, allow_inf_nan=False,
+        description="해당 Profile 가중치를 적용한 0~100점. 근거 부족으로 미산출이면 None"
+    )
+    decision: Optional[FinalDecision] = Field(
+        default=None, description="구조화된 프로필 판정. 종합 단계에서 판단 유보를 전달하는 데 사용"
+    )
+    evidence_coverage: Optional[float] = Field(
+        default=None, ge=0, le=100, allow_inf_nan=False,
+        description="해당 프로필의 근거 충족률(0~100%). 계산하지 않은 프로필은 None"
+    )
     domain_contributions: Dict[str, float] = Field(default_factory=dict, description="영역별 점수·가중치·기여점수")
     supporting_evidence_ids: List[str] = Field(default_factory=list, description="찬성 근거 ID")
     contrary_evidence_ids: List[str] = Field(default_factory=list, description="반대·상충 근거 ID")
@@ -52,8 +62,14 @@ class CompanyResult(BaseModel):
     domain_scores: Dict[Domain, float]
     evidence_coverage: float
     profile_results: List[ProfileResult]
-    average_score: float
-    score_std_dev: float
+    average_score: Optional[float] = Field(
+        default=None, ge=0, le=100, allow_inf_nan=False,
+        description="산출된 프로필 점수의 평균. 모두 미산출이면 None"
+    )
+    score_std_dev: Optional[float] = Field(
+        default=None, ge=0, allow_inf_nan=False,
+        description="산출된 프로필 점수의 모집단 표준편차. 모두 미산출이면 None"
+    )
     final_decision: str
     summary_reason: str
 
