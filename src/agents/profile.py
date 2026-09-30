@@ -72,19 +72,19 @@ def profile_agent_node(state: ProfileSendState) -> Dict[str, Any]:
     profile_id = state["profile_name"]
     
     # 성향별 커스텀 모듈 라우팅
-    if profile_id == "기술중심형":
+    if profile_id == "technology_focused":
         from src.agents.profiles.technology import run_technology_agent
         result = run_technology_agent(state)
-    elif profile_id == "안정형":
+    elif profile_id == "stability_focused":
         from src.agents.profiles.stability import run_stability_agent
         result = run_stability_agent(state)
-    elif profile_id == "성장형":
+    elif profile_id == "growth_focused":
         from src.agents.profiles.growth import run_growth_agent
         result = run_growth_agent(state)
-    elif profile_id == "균형형":
+    elif profile_id == "balanced":
         from src.agents.profiles.balanced import run_balanced_agent
         result = run_balanced_agent(state)
-    elif profile_id == "사업성중심형":
+    elif profile_id == "business_focused":
         from src.agents.profiles.business import run_business_agent
         result = run_business_agent(state)
     else:
