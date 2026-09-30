@@ -189,14 +189,20 @@ def main():
                     
         progress.update(task_id, description="[bold green]Multi-Agent 파이프라인 실행 완료![/bold green]")
 
-    report_path = Path(__file__).parent / "output" / "final_multi_agent_report.md"
+    md_report_path = Path(__file__).parent / "output" / "final_multi_agent_report.md"
+    pdf_report_path = Path(__file__).parent / "output" / "final_report.pdf"
+    
     console.print("\n" + "="*50)
-    console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
-
-    # 5. 보고서 자동 실행 (Mac OS 기준 open 명령어)
-    if report_path.exists():
-        console.print("\n[bold cyan]📄 생성된 투자 보고서를 자동으로 엽니다...[/bold cyan]")
-        os.system(f"open '{report_path}'")
+    
+    if pdf_report_path.exists():
+        console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{pdf_report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
+        console.print("\n[bold cyan]📄 생성된 PDF 보고서를 자동으로 엽니다...[/bold cyan]")
+        os.system(f"open '{pdf_report_path}'")
+    else:
+        console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{md_report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
+        if md_report_path.exists():
+            console.print("\n[bold cyan]📄 생성된 마크다운 보고서를 자동으로 엽니다...[/bold cyan]")
+            os.system(f"open '{md_report_path}'")
 
 if __name__ == "__main__":
     main()

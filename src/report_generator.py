@@ -4,6 +4,10 @@ import datetime
 import matplotlib.pyplot as plt
 import numpy as np
 from jinja2 import Environment, FileSystemLoader
+
+# Mac(Apple Silicon)에서 Homebrew로 설치한 라이브러리를 WeasyPrint가 찾을 수 있도록 환경변수 강제 주입
+os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = "/opt/homebrew/lib:/usr/local/lib:" + os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
+
 from weasyprint import HTML
 
 def generate_pdf_report(comparison_result):
