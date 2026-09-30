@@ -8,9 +8,16 @@ from jinja2 import Environment, FileSystemLoader
 # Mac(Apple Silicon)에서 Homebrew로 설치한 라이브러리를 WeasyPrint가 찾을 수 있도록 환경변수 강제 주입
 os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = "/opt/homebrew/lib:/usr/local/lib:" + os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
 
-from weasyprint import HTML
-
 def generate_pdf_report(comparison_result):
+    # WeasyPrint의 macOS 시스템 의존성(Pango 등)이 없더라도 다른 모듈과
+    # Markdown 보고서 생성까지 함께 실패하지 않도록 PDF 생성 시점에만 불러온다.
+    try:
+        from weasyprint import HTML
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            "PDF 생성에 필요한 WeasyPrint 시스템 라이브러리(Pango/GLib)를 불러올 수 없습니다."
+        ) from exc
+
     # 경로 설정
     base_dir = Path(__file__).parent.parent
     output_dir = base_dir / "output"
@@ -22,8 +29,13 @@ def generate_pdf_report(comparison_result):
     if not companies:
         return None
         
-    # 미산출 점수는 순위에 포함하지 않는다.
-    scored_companies = [c for c in companies if c.average_score is not None]
+    # 미산출 프로필이 하나라도 있는 기업은 최우선 추천 순위에 포함하지 않는다.
+    # 일부 프로필의 참고 평균이 완전한 종합점수처럼 보이는 것을 방지한다.
+    scored_companies = [
+        c for c in companies
+        if c.average_score is not None
+        and all(p.weighted_score is not None for p in c.profile_results)
+    ]
     best_company = max(scored_companies, key=lambda c: c.average_score, default=None)
     
     # 한글 폰트 설정 (Mac)

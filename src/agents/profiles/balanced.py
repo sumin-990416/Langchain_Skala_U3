@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
-from ...schemas import Domain, ProfileResult
+from ...schemas import Domain, FinalDecision, ProfileResult
 from ..profile import calculate_profile_score, load_profile_config
 
 
@@ -176,23 +176,47 @@ def run_balanced_agent(state: Any) -> ProfileResult:
     })
     if custom_score is None:
         missing = [name for name, item in criterion_results.items() if item["score"] is None]
-        raise InsufficientBalancedEvidenceError(
-            f"{company_name} 균형형 점수 미산출: {', '.join(missing)}. "
-            "공통 ProfileResult는 숫자 점수만 허용하므로 0점이나 임의 점수로 대체하지 않았습니다."
+        known_weight = sum(
+            CRITERION_WEIGHTS[name]
+            for name, item in criterion_results.items()
+            if item["score"] is not None
+        )
+        supporting_ids = list(dict.fromkeys(
+            ref for item in criterion_results.values()
+            for ref in item["evidence_ids"]
+        ))
+        return ProfileResult(
+            profile_name=profile_name,
+            weighted_score=None,
+            decision=FinalDecision.HOLD_RAG,
+            evidence_coverage=round(known_weight * 100, 2),
+            supporting_evidence_ids=supporting_ids,
+            unknown_items=[
+                f"{name}: {criterion_results[name]['missing_information']}"
+                for name in missing
+            ],
+            recommendation=(
+                "점수 없음 / 근거 부족 판단 유보 | 균형형 연결성 평가 중 "
+                f"{', '.join(missing)} 근거가 부족합니다."
+            ),
+            due_diligence_questions=[
+                f"{name}: {criterion_results[name]['missing_information']}"
+                for name in missing
+            ],
         )
 
     final_score = round(common_score * 0.7 + custom_score * 0.3, 2)
     if final_score >= 75:
-        decision = "투자검토 추천 (추가 실사 필요)"
+        decision = FinalDecision.RECOMMEND
     elif final_score >= 60:
-        decision = "조건부 검토"
+        decision = FinalDecision.CONDITIONAL
     else:
-        decision = "투자 보류 및 추가 실사"
+        decision = FinalDecision.HOLD_SCORE
     grade_summary = "·".join(
         f"{SHORT_LABELS[name]} {item['label']}"
         for name, item in criterion_results.items()
     )
-    recommendation = f"{decision} | {grade_summary}"
+    recommendation = f"{decision.value} | {grade_summary}"
     unknown_items = [
         f"{name}: {item['missing_information']}"
         for name, item in criterion_results.items() if item["missing_information"]
@@ -211,6 +235,8 @@ def run_balanced_agent(state: Any) -> ProfileResult:
     return ProfileResult(
         profile_name=profile_name,
         weighted_score=final_score,
+        decision=decision,
+        evidence_coverage=100.0,
         domain_contributions=domain_contributions,
         supporting_evidence_ids=supporting_ids,
         contrary_evidence_ids=[],

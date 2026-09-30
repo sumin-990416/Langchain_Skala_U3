@@ -135,12 +135,17 @@
     </div>
     
     <div class="summary-block">
+        {% if best_company %}
         <h2>최우선 검토 대상: {{ best_company.company_name }}</h2>
         <p>{{ best_company.summary_reason }}</p>
         <p class="summary-highlight">
             최종 투자 판정: {{ best_company.final_decision }}
             (최고점: {{ best_company.average_score | round(2) }}점, 근거 충족률: {{ best_company.evidence_coverage | round(2) }}%)
         </p>
+        {% else %}
+        <h2>최우선 검토 대상: 판단 유보</h2>
+        <p>점수 산출 조건을 충족한 기업이 없습니다. 아래 근거 부족 항목을 추가 확인해야 합니다.</p>
+        {% endif %}
     </div>
 
     <div>
@@ -167,8 +172,10 @@
             {% for item in results %}
             <li>
                 <span class="company-name">- {{ item.company }}</span>
-                <span class="company-score">{{ item.result.weighted_score | round(2) }}점</span>
-                <span class="{% if item.result.recommendation == '투자검토 추천' %}decision-pass{% else %}decision-fail{% endif %}">
+                <span class="company-score">
+                    {% if item.result.weighted_score is not none %}{{ item.result.weighted_score | round(2) }}점{% else %}점수 없음{% endif %}
+                </span>
+                <span class="{% if item.result.decision and item.result.decision.value == '투자검토 추천' %}decision-pass{% else %}decision-fail{% endif %}">
                     [{{ item.result.recommendation }}]
                 </span>
             </li>
@@ -186,7 +193,9 @@
                 [{{ c.final_decision }}]
             </span>
         </h3>
-        <p><strong>최종 평균 점수:</strong> {{ c.average_score | round(2) }}점</p>
+        <p><strong>최종 평균 점수:</strong>
+            {% if c.average_score is not none %}{{ c.average_score | round(2) }}점{% else %}점수 없음{% endif %}
+        </p>
         <p><strong>세부 평가 지표:</strong>
             기술(30%) {{ c.domain_scores['technology'] | round(2) }}점 |
             시장(20%) {{ c.domain_scores['market'] | round(2) }}점 |
@@ -194,6 +203,21 @@
             안정성(15%) {{ c.domain_scores['risk'] | round(2) }}점 |
             사업/팀(15%) {{ c.domain_scores['team'] | round(2) }}점
         </p>
+        <p><strong>근거 부족 및 판단 유보:</strong></p>
+        {% set held = c.profile_results | selectattr('weighted_score', 'none') | list %}
+        {% if held %}
+        <ul>
+            {% for p in held %}
+            <li>
+                <strong>{{ p.profile_name }}</strong>
+                {% if p.evidence_coverage is not none %}(근거 충족률 {{ p.evidence_coverage | round(1) }}%){% endif %}:
+                {{ p.unknown_items | join('; ') if p.unknown_items else p.recommendation }}
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p>해당 없음</p>
+        {% endif %}
     </div>
     {% endfor %}
 

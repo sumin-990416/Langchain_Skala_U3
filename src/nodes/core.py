@@ -183,13 +183,6 @@ def compare_companies(state: InvestmentAgentState) -> dict:
             f"| {_format_score(c.domain_scores.get(Domain.TEAM))} "
             f"| {c.evidence_coverage:.1f}% "
             f"| {average_label} "
-            f"| {c.domain_scores.get(Domain.TECHNOLOGY, 0):.2f} "
-            f"| {c.domain_scores.get(Domain.MARKET, 0):.2f} "
-            f"| {c.domain_scores.get(Domain.FINANCE, 0):.2f} "
-            f"| {c.domain_scores.get(Domain.RISK, 0):.2f} "
-            f"| {c.domain_scores.get(Domain.TEAM, 0):.2f} "
-            f"| {c.evidence_coverage:.2f}% "
-            f"| {c.average_score:.2f} "
             f"| {c.final_decision} |\n"
         )
         
@@ -218,7 +211,10 @@ def generate_report(state: InvestmentAgentState) -> dict:
     for profile_name, results in profiles_dict.items():
         report += f"\n### {profile_name} 관점\n"
         for company_name, p in results:
-            report += f"- **{company_name}**: {p.weighted_score:.2f}점 ({p.recommendation})\n"
+            report += (
+                f"- **{company_name}**: {_format_score(p.weighted_score, '점')} "
+                f"({p.recommendation})\n"
+            )
             # due_diligence_questions 나 상세 내용 추가 가능
 
     report += f"""
@@ -259,16 +255,26 @@ def generate_report(state: InvestmentAgentState) -> dict:
                 report += "".join(f"- {question}\n" for question in p.due_diligence_questions)
             report += f"\n{p.recommendation}\n"
 
+        held_profiles = [p for p in c.profile_results if p.weighted_score is None]
+        report += "\n#### 근거 부족 및 판단 유보\n"
+        if not held_profiles:
+            report += "- 해당 없음\n"
+        for p in held_profiles:
+            report += f"- **{p.profile_name}**"
+            if p.evidence_coverage is not None:
+                report += f" (근거 충족률 {p.evidence_coverage:.1f}%)"
+            report += ": 점수 미산출 및 판단 유보\n"
+            if p.unknown_items:
+                report += "  - 부족 근거: " + "; ".join(p.unknown_items) + "\n"
+            if p.due_diligence_questions:
+                report += "  - 추가 요청: " + "; ".join(p.due_diligence_questions) + "\n"
+
         report += "\n#### 사업 리스크 및 한계점\n"
         report += "- 문서 기반 분석 중 발견된 일부 리스크 및 미확인 요소\n"
 
         report += "\n#### 팀 및 경영진\n"
         report += "- 핵심 인력 전문성 확인\n"
-        report += f"\n#### {c.company_name} ({c.final_decision})\n"
-        report += f"- **평균 점수**: {c.average_score:.2f}점 (에이전트 간 편차: {c.score_std_dev:.2f})\n"
-        report += f"- **근거 충족률**: {c.evidence_coverage:.2f}%\n"
-        report += f"- **최종 요약**: {c.summary_reason}\n"
-        report += f"- **발견된 리스크 및 한계점**: 문서 기반 분석 중 발견된 리스크 요인들 검토 필요\n"
+        report += "- 문서 기반 분석 중 발견된 리스크 요인과 미확인 항목에 대한 추가 검토 필요\n"
 
     report += "\n## REFERENCE (참고 자료)\n"
     report += "- ACCURE_RAG_source_pack.pdf\n"

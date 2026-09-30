@@ -2,7 +2,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
-from ...schemas import Domain, ProfileResult
+from ...schemas import Domain, FinalDecision, ProfileResult
 from ..profile import calculate_profile_score, LLMProfileOutput, load_profile_config
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -292,12 +292,29 @@ def run_growth_agent(state: Any) -> ProfileResult:
             GROWTH_PARAMETER_LABELS[key]
             for key in missing_core_parameters
         ]
-        raise GrowthEvidenceInsufficientError(
-            "성장형 점수 미산출 - "
-            f"근거 충족률 {growth_evidence_coverage * 100:.1f}% "
-            f"(기준 {GROWTH_EVIDENCE_THRESHOLD * 100:.0f}%), "
-            f"근거 부족 항목: {insufficient_labels or '없음'}, "
-            f"미확인 핵심 지표: {core_labels or '없음'}"
+        coverage_percent = round(growth_evidence_coverage * 100, 2)
+        return ProfileResult(
+            profile_name=profile_name,
+            weighted_score=None,
+            decision=FinalDecision.HOLD_RAG,
+            evidence_coverage=coverage_percent,
+            supporting_evidence_ids=list(dict.fromkeys(
+                growth_evaluation.supporting_evidence_ids
+            )),
+            unknown_items=list(dict.fromkeys(
+                growth_evaluation.unknown_items + insufficient_labels + core_labels
+            )),
+            recommendation=(
+                "점수 없음 / 근거 부족 판단 유보 | "
+                f"성장형 근거충족률 {coverage_percent:.1f}% "
+                f"(산출 기준 {GROWTH_EVIDENCE_THRESHOLD * 100:.0f}%). "
+                f"근거 부족 항목: {', '.join(insufficient_labels) or '없음'}. "
+                f"미확인 핵심 지표: {', '.join(core_labels) or '없음'}."
+            ),
+            due_diligence_questions=[
+                f"{label}을 확인할 수 있는 정량 자료와 원문 근거를 제공해 주세요."
+                for label in list(dict.fromkeys(insufficient_labels + core_labels))
+            ],
         )
 
     custom_score = calculate_growth_custom_score(growth_parameter_assessments)
