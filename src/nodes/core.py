@@ -148,11 +148,12 @@ def compare_companies(state: InvestmentAgentState) -> dict:
     return {"final_comparison": ComparisonResult(companies=companies, comparison_table=table)}
 
 def generate_report(state: InvestmentAgentState) -> dict:
-    """5쪽 이내의 마크다운 보고서 작성"""
+    """5쪽 이내의 마크다운 보고서 작성 및 최종 PDF 리포트 생성"""
     comp = state.get("final_comparison")
     if not comp:
         return {}
 
+    # 1. 마크다운 리포트 생성
     report = f"""# 투자 심사 요약 보고서 (Multi-Agent RAG)
 
 ## SUMMARY (종합 요약)
@@ -188,6 +189,15 @@ def generate_report(state: InvestmentAgentState) -> dict:
     report_path = output_dir / f"final_multi_agent_report.md"
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
+        
+    # 2. PDF 시각화 리포트 생성
+    try:
+        from src.report_generator import generate_pdf_report
+        pdf_path = generate_pdf_report(comp)
+        if pdf_path:
+            print(f"🎉 고품질 PDF 보고서가 생성되었습니다: {pdf_path}")
+    except Exception as e:
+        print(f"PDF 생성 중 오류 발생 (환경에 따라 Pango/Cairo 필요할 수 있음): {e}")
         
     return {"report_draft": report, "report_errors": []}
 
