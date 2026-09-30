@@ -17,10 +17,11 @@ LangGraph 기반 다중 에이전트(Multi-Agent)와 Agentic RAG를 활용하여
 6. [Graph 전체 흐름](#6-graph-전체-흐름)
 7. [State Schema](#7-state-schema)
 8. [프로젝트 구조](#8-프로젝트-구조)
-9. [설치 및 실행 방법](#9-설치-및-실행-방법)
-10. [실행 예시](#10-실행-예시)
-11. [출력 보고서 예시](#11-출력-보고서-예시)
-12. [구현·검증 계획과 담당](#12-구현검증-계획과-담당)
+9. [핵심 기술 스택 및 코드 해설](#9-핵심-기술-스택-및-코드-해설)
+10. [설치 및 실행 방법](#10-설치-및-실행-방법)
+11. [실행 예시](#11-실행-예시)
+12. [출력 보고서 예시](#12-출력-보고서-예시)
+13. [구현·검증 계획과 담당](#13-구현검증-계획과-담당)
 
 ---
 
@@ -180,29 +181,90 @@ EvidenceCoverage     = 확인된 세부항목 수 / 전체 세부항목 수 × 1
 
 ## 6. Graph 전체 흐름
 
-```mermaid
-flowchart TD
-    A([START]) --> B[고정 기업 3곳과 문서 코퍼스 로드]
-    B --> C[현재 기업 선택]
-    C --> D[29개 항목 평가 질문 생성]
-    D --> E[Evidence RAG 검색]
-    E --> F[관련성·출처·상충 검증]
-    F -->|근거 충분| G[공통 영역점수·근거충족률 계산]
-    F -->|부족·retry < 2| H[Query Rewrite]
-    H --> E
-    F -->|retry = 2| I[미확인 항목 기록]
-    I --> G
-    G --> J[5개 Profile Agent 병렬 실행]
-    J --> K[Agent 결과 종합·최종 투자지표]
-    K --> L[기업 결과 저장]
-    L --> M{남은 기업?}
-    M -->|예| C
-    M -->|아니오| N[기업 간 비교]
-    N --> O[투자보고서 구조화 데이터 생성]
-    O --> P[인용·수치·REFERENCE 검증]
-    P -->|오류| O
-    P -->|통과| Q([END])
 ```
+                              ┌─────────────────────────────────┐
+                              │          [START]                │
+                              └────────────┬────────────────────┘
+                                           ▼
+                              ┌─────────────────────────────────┐
+                              │  고정 기업 3곳 + 문서 코퍼스 로드  │
+                              └────────────┬────────────────────┘
+                                           ▼
+                     ┌─────── │  현재 기업 선택 (1/3)             │ ◄──────────┐
+                     │        └────────────┬────────────────────┘            │
+                     │                     ▼                                 │
+                     │        ┌─────────────────────────────────┐            │
+                     │        │  29개 항목 평가 질문 생성         │            │
+                     │        └────────────┬────────────────────┘            │
+                     │                     ▼                                 │
+                     │   ┌──► ┌─────────────────────────────────┐            │
+                     │   │    │  Evidence RAG 검색 (Top-K=5)     │            │
+                     │   │    └────────────┬────────────────────┘            │
+                     │   │                 ▼                                 │
+                     │   │    ┌─────────────────────────────────┐            │
+                     │   │    │  관련성 · 출처등급 · 상충 검증    │            │
+                     │   │    └──┬──────────┬───────────────┬───┘            │
+                     │   │       │          │               │                │
+                     │   │   충분 ▼     부족(< 2회)     2회 도달             │
+                     │   │       │          │               │                │
+                     │   │       │    ┌─────┴─────┐   ┌─────┴─────┐          │
+                     │   │       │    │  Query     │   │  미확인   │          │
+                     │   │       │    │  Rewrite   │   │  항목기록 │          │
+                     │   │       │    └─────┬─────┘   └─────┬─────┘          │
+                     │   │       │          │               │                │
+                     │   └───────┘──────────┘               │                │
+                     │                     ┌────────────────┘                │
+                     │                     ▼                                 │
+                     │        ┌─────────────────────────────────┐            │
+                     │        │  공통 5개 영역 점수 계산          │            │
+                     │        │  + 근거 충족률(Coverage) 산출     │            │
+                     │        └────────────┬────────────────────┘            │
+                     │                     ▼                                 │
+                     │        ┌─────────────────────────────────────────┐    │
+                     │        │  5개 Profile Agent 병렬 실행 (Send API) │    │
+                     │        │                                         │    │
+                     │        │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
+                     │        │  │기술형│ │안정형│ │성장형│ │균형형│ │사업형│
+                     │        │  │손연우│ │강도희│ │김대훈│ │이연주│ │정수민│
+                     │        │  └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘
+                     │        └─────┼────────┼────────┼────────┼────────┼────┘
+                     │              └────────┴────────┼────────┴────────┘
+                     │                                ▼
+                     │        ┌─────────────────────────────────┐
+                     │        │  Agent 결과 종합 · 최종 투자지표  │
+                     │        └────────────┬────────────────────┘
+                     │                     ▼
+                     │        ┌─────────────────────────────────┐
+                     │        │  기업 결과 저장                  │
+                     │        └────────────┬────────────────────┘
+                     │                     ▼
+                     │              ┌──────┴──────┐
+                     │              │ 남은 기업?   │
+                     │              └──┬───────┬──┘
+                     │            예   │       │  아니오
+                     └─────────────────┘       ▼
+                              ┌─────────────────────────────────┐
+                              │  3개 기업 비교                   │
+                              └────────────┬────────────────────┘
+                                           ▼
+                     ┌──────► ┌─────────────────────────────────┐
+                     │        │  투자보고서 생성 (5쪽 이내)       │
+                     │        └────────────┬────────────────────┘
+                     │                     ▼
+                     │        ┌─────────────────────────────────┐
+                     │  오류  │  인용 · 수치 · REFERENCE 검증    │
+                     └────────┤                                 │
+                              └────────────┬────────────────────┘
+                                      통과 │
+                                           ▼
+                              ┌─────────────────────────────────┐
+                              │          [END]                  │
+                              └─────────────────────────────────┘
+```
+
+**흐름을 한 줄로 요약하면:**
+
+> 기업 로드 → 질문 생성 → RAG 검색(최대 2회 재시도) → 공통 점수 → 5명 병렬 평가 → 종합 → *기업 수만큼 반복* → 비교표 → 보고서 생성(검증 통과까지 재시도) → 끝
 
 | 구조 | 설계 내용 | 종료·통제 |
 |---|---|---|
@@ -271,7 +333,212 @@ capstone-v1/
 
 ---
 
-## 9. 설치 및 실행 방법
+## 9. 핵심 기술 스택 및 코드 해설
+
+### 9-1. 사용 기술 스택
+
+| 기술 | 역할 | 버전 |
+|---|---|---|
+| **LangChain** | LLM 체이닝, 프롬프트 템플릿, Structured Output | `>=1.4` |
+| **LangGraph** | 상태 기반 Multi-Agent 그래프 오케스트레이션 | `>=1.2` |
+| **OpenAI GPT-4o-mini** | 투자 판단 LLM (Structured Output 지원) | — |
+| **FAISS** | 벡터 유사도 검색 (로컬 인덱스) | `faiss-cpu` |
+| **OpenAI Embeddings** | 문서 임베딩 (`text-embedding-3-small`) | — |
+| **Pydantic v2** | State Schema / Agent 출력 스키마 강제 | `>=2.13` |
+| **Rich** | 터미널 대시보드 UI (스피너, 패널, 프로그레스바) | `>=14.3` |
+| **PyPDF** | PDF 문서 파싱 | `>=6.19` |
+
+### 9-2. LangChain — Prompt ➜ LLM ➜ Structured Output 체이닝
+
+Profile Agent 내부에서는 LangChain의 **LCEL(LangChain Expression Language)** 파이프 연산자(`|`)를 사용해 프롬프트 → LLM → 구조화 출력을 하나의 체인으로 연결합니다.
+
+```python
+# src/agents/profile.py 에서 발췌
+
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+
+# 1. LLM + Structured Output 바인딩
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+structured_llm = llm.with_structured_output(LLMProfileOutput)  # Pydantic 스키마 강제
+
+# 2. 프롬프트 템플릿 정의
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "당신은 배터리 AI 스타트업 전문 심사역 '{profile_name}'입니다. ..."),
+    ("user", "[기업명]: {company_name}\n[도메인별 점수]\n{domain_scores_text}\n...")
+])
+
+# 3. LCEL 파이프 체이닝: Prompt → LLM (자동으로 Pydantic 객체 반환)
+chain = prompt | structured_llm
+
+# 4. 체인 실행 — LLM이 자유 텍스트가 아닌 Pydantic 객체를 반환
+result: LLMProfileOutput = chain.invoke({
+    "profile_name": "기술중심형",
+    "company_name": "ACCURE",
+    "domain_scores_text": "- technology: 90.0\n- market: 80.0\n...",
+    "evidence_text": "- [TECH-01] ACCURE는 BMS 연동 기반의..."
+})
+# result.recommendation  →  "추천"
+# result.due_diligence_questions  →  ["독립 성능 검증 보고서 확보 여부", ...]
+```
+
+> **핵심 포인트**: `with_structured_output()`을 사용하면 LLM이 자유 텍스트 대신 **Pydantic 스키마에 맞는 JSON 객체**를 반환합니다. 덕분에 5개 에이전트의 출력 형식이 100% 동일하게 유지되어, 후속 종합(Synthesis) 단계에서 안정적으로 점수를 비교할 수 있습니다.
+
+### 9-3. LangGraph — StateGraph 기반 Multi-Agent 오케스트레이션
+
+LangGraph는 LangChain 위에 구축된 **상태 머신(State Machine) 프레임워크**입니다. 노드(함수)와 엣지(전이 규칙)를 정의하면 복잡한 분기·반복·병렬 실행을 선언적으로 관리할 수 있습니다.
+
+```python
+# src/graph.py 에서 발췌
+
+from langgraph.graph import StateGraph, END
+from langgraph.constants import Send
+
+workflow = StateGraph(InvestmentAgentState)   # TypedDict 기반 상태 정의
+
+# ── 노드 등록 (각 노드는 State → dict 를 반환하는 순수 함수) ──
+workflow.add_node("load_inputs", load_inputs)
+workflow.add_node("build_questions", build_questions)
+workflow.add_node("retrieve_evidence", retrieve_evidence)
+workflow.add_node("score_common", score_common)
+workflow.add_node("profile_agent", profile_agent_node)
+workflow.add_node("synthesize_company", synthesize_company)
+# ... (총 14개 노드)
+
+# ── 직선 엣지: A 끝나면 B로 ──
+workflow.add_edge("load_inputs", "select_company")
+workflow.add_edge("select_company", "build_questions")
+workflow.add_edge("build_questions", "retrieve_evidence")
+```
+
+#### 조건부 분기 (Conditional Edge)
+
+근거가 충분한지에 따라 **다음 노드를 동적으로 선택**합니다.
+
+```python
+# 라우터 함수: State를 받아 다음 노드 이름(문자열)을 반환
+def route_evidence_check(state) -> Literal["score_common", "rewrite_query", "record_unknown"]:
+    if is_sufficient:
+        return "score_common"        # 충분 → 점수 계산으로
+    elif total_retry < 2:
+        return "rewrite_query"       # 부족 → 질의 수정 후 재검색
+    else:
+        return "record_unknown"      # 2회 초과 → 미확인 기록
+
+# 그래프에 조건부 엣지로 등록
+workflow.add_conditional_edges(
+    "validate_evidence",             # 출발 노드
+    route_evidence_check,            # 라우터 함수
+    {
+        "score_common": "score_common",
+        "rewrite_query": "rewrite_query",
+        "record_unknown": "record_unknown"
+    }
+)
+
+# 재검색 루프: rewrite → retrieve → validate → (다시 판단)
+workflow.add_edge("rewrite_query", "retrieve_evidence")
+```
+
+#### 병렬 실행 — `Send` API (Fan-out)
+
+5개의 Profile Agent를 **동시에** 실행하기 위해 LangGraph의 `Send` API를 사용합니다.
+
+```python
+from langgraph.constants import Send
+
+def route_to_profiles(state):
+    """공통 점수 계산 후, 5개 에이전트에 동일한 데이터를 동시에 전송"""
+    return [
+        Send("profile_agent", {
+            "profile_name": p,                                    # "기술중심형", "안정형", ...
+            "domain_scores": state["domain_scores"],              # 공통 점수 (동일)
+            "validated_evidence": state["validated_evidence"],     # 검증된 근거 (동일)
+            "current_company": state["current_company"]           # 현재 기업 (동일)
+        })
+        for p in get_all_profiles()  # → 5개의 Send 객체 리스트 반환
+    ]
+
+# 그래프에 등록: score_common이 끝나면 5개 profile_agent가 동시 실행
+workflow.add_conditional_edges("score_common", route_to_profiles, ["profile_agent"])
+```
+
+> **핵심 포인트**: `Send`는 동일한 노드(`profile_agent`)를 **서로 다른 입력**으로 여러 번 동시에 띄우는 LangGraph의 병렬 실행 메커니즘입니다. 5개의 결과는 State의 `profile_results` 필드에 `Annotated[List, operator.add]` Reducer를 통해 자동으로 누적됩니다.
+
+#### 기업 반복 루프 (Company Loop)
+
+```python
+def route_next_company(state) -> Literal["select_company", "compare_companies"]:
+    """current_index가 기업 수 미만이면 다음 기업으로, 아니면 비교 단계로"""
+    if state["current_index"] < len(state["selected_companies"]):
+        return "select_company"       # 다음 기업으로 되돌아감
+    else:
+        return "compare_companies"    # 모든 기업 완료 → 비교
+
+workflow.add_conditional_edges("save_company_result", route_next_company, {...})
+```
+
+#### 최종 컴파일 및 실행
+
+```python
+graph = workflow.compile()   # 그래프를 실행 가능한 Runnable 객체로 변환
+
+# 스트리밍 실행: 각 노드가 완료될 때마다 이벤트 발생
+for event in graph.stream(initial_state):
+    for node_name, node_output in event.items():
+        print(f"노드 완료: {node_name}")
+```
+
+### 9-4. 기술 적용 요약도
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        main.py (진입점)                             │
+│  Rich Console UI  ·  환경점검  ·  Tkinter GUI  ·  보고서 자동 열기  │
+└──────────────────────────────┬──────────────────────────────────────┘
+                               │  graph.stream(initial_state)
+                               ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│                    LangGraph StateGraph                             │
+│                                                                     │
+│  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐      │
+│  │load_input│───▶│build_    │───▶│retrieve_ │───▶│validate_ │      │
+│  │          │    │questions │    │evidence  │    │evidence  │      │
+│  └──────────┘    └──────────┘    └──────────┘    └────┬─────┘      │
+│                                       ▲               │            │
+│                                       │         ┌─────┴─────┐      │
+│                                  rewrite_query  │score_common│      │
+│                                                 └─────┬─────┘      │
+│                                                       │            │
+│                               ┌───────────────────────┼──────┐     │
+│                               │   Send API (Fan-out)  │      │     │
+│                               │  ┌────┐┌────┐┌────┐┌────┐┌────┐   │
+│                               │  │기술││안정││성장││균형││사업│   │
+│                               │  └─┬──┘└─┬──┘└─┬──┘└─┬──┘└─┬──┘   │
+│                               └────┼─────┼─────┼─────┼─────┼──┘   │
+│                                    └─────┴──┬──┴─────┘     │      │
+│     LangChain LCEL:                         ▼              │      │
+│     prompt | structured_llm     ┌──────────────────┐       │      │
+│     (각 Agent 내부에서 실행)     │synthesize_company│       │      │
+│                                 └────────┬─────────┘       │      │
+│                                          ▼                 │      │
+│                                 ┌──────────────────┐       │      │
+│                                 │ generate_report  │       │      │
+│                                 └────────┬─────────┘       │      │
+│                                          ▼                 │      │
+│                                        [END]               │      │
+└─────────────────────────────────────────────────────────────┘      │
+                                                                     │
+┌─────────────────────────────────────────────────────────────────────┐
+│                         RAG Layer                                   │
+│  ingest.py (PyPDF → Chunk → OpenAI Embedding → FAISS 저장)         │
+│  vector_store.py (FAISS 로드 → Top-K 유사도 검색)                   │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 10. 설치 및 실행 방법
 
 ### Step 1. 환경 변수 설정
 프로젝트 루트에 `.env` 파일을 생성하고 API 키를 입력합니다.
@@ -295,7 +562,7 @@ uv run python main.py
 
 ---
 
-## 10. 실행 예시
+## 11. 실행 예시
 
 `uv run python main.py`를 실행하면 터미널에 다음과 같은 대시보드가 출력됩니다.
 
@@ -348,7 +615,7 @@ uv run python main.py
 
 ---
 
-## 11. 출력 보고서 예시
+## 12. 출력 보고서 예시
 
 파이프라인이 완료되면 `output/final_multi_agent_report.md`에 다음과 같은 보고서가 자동 생성됩니다.
 
@@ -381,7 +648,7 @@ uv run python main.py
 
 ---
 
-## 12. 구현·검증 계획과 담당
+## 13. 구현·검증 계획과 담당
 
 | 단계 | 구현 내용 | 완료 조건 |
 |---|---|---|
