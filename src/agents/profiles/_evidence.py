@@ -28,9 +28,9 @@ class ItemEvidenceAssessment(BaseModel):
     item_id: str = Field(description="주어진 평가 항목 ID")
     confirmed: bool = Field(description="해당 기업에 대해 질문에 답할 구체적인 자료가 있는지")
     reason: str = Field(min_length=1, description="충족 또는 미확인 이유를 한국어로 작성")
-    citations: List[EvidenceCitation]
-    unresolved_conflict: bool = Field(description="해당 질문에 대한 답에 영향을 주는 미해결 상충 여부")
-    due_diligence_question: str = Field(description="추가 확인 질문. 추가 확인이 필요 없으면 빈 문자열")
+    citations: List[EvidenceCitation] = Field(default_factory=list)
+    unresolved_conflict: bool = Field(default=False, description="해당 질문에 대한 답에 영향을 주는 미해결 상충 여부")
+    due_diligence_question: str = Field(default="", description="추가 확인 질문. 추가 확인이 필요 없으면 빈 문자열")
 
 
 class ProfileEvidenceAssessment(BaseModel):
