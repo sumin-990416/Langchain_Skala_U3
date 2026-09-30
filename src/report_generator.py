@@ -17,8 +17,6 @@ os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = (
     + os.environ.get("DYLD_FALLBACK_LIBRARY_PATH", "")
 )
 
-from weasyprint import HTML
-
 from src.schemas import Domain
 
 
@@ -164,6 +162,15 @@ def _write_charts(company_rows: list[Dict[str, Any]], images_dir: Path) -> tuple
 
 def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str] = None) -> str:
     """판단 유보·부분 근거 부족·Agent 오류를 포함해 항상 5쪽 보고서를 생성합니다."""
+    # WeasyPrint의 시스템 의존성이 없더라도 다른 모듈과 Markdown 생성은
+    # 계속되도록 실제 PDF 생성 시점에만 불러옵니다.
+    try:
+        from weasyprint import HTML
+    except (ImportError, OSError) as exc:
+        raise RuntimeError(
+            "PDF 생성에 필요한 WeasyPrint 시스템 라이브러리(Pango/GLib)를 불러올 수 없습니다."
+        ) from exc
+
     base_dir = Path(__file__).parent.parent
     output_dir = base_dir / "output"
     output_dir.mkdir(exist_ok=True)
@@ -175,7 +182,16 @@ def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str
         raise ValueError("PDF 보고서에 표시할 기업 결과가 없습니다.")
 
     company_rows = [_company_context(company) for company in companies]
-    scored_rows = [row for row in company_rows if row["score_numeric"] is not None]
+    fully_scored_names = {
+        company.company_name
+        for company in companies
+        if company.average_score is not None
+        and all(profile.weighted_score is not None for profile in company.profile_results)
+    }
+    scored_rows = [
+        row for row in company_rows
+        if row["name"] in fully_scored_names and row["score_numeric"] is not None
+    ]
     best_company = max(scored_rows, key=lambda row: row["score_numeric"], default=None)
     if best_company is None:
         headline = "전체 기업 판단 유보"
