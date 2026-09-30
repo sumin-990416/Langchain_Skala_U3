@@ -70,6 +70,14 @@ def generate_pdf_report(comparison_result):
     plt.savefig(donut_chart_path, dpi=300, transparent=True)
     plt.close()
     
+    # 에이전트 관점별 분류
+    profiles_dict = {}
+    for c in companies:
+        for p in c.profile_results:
+            if p.profile_name not in profiles_dict:
+                profiles_dict[p.profile_name] = []
+            profiles_dict[p.profile_name].append({'company': c.company_name, 'result': p})
+            
     # Jinja2 렌더링
     env = Environment(loader=FileSystemLoader(str(base_dir / "src" / "templates")))
     template = env.get_template("report.html")
@@ -78,6 +86,7 @@ def generate_pdf_report(comparison_result):
         date=datetime.datetime.now().strftime("%Y-%m-%d"),
         best_company=best_company,
         companies=companies,
+        profiles_dict=profiles_dict,
         bar_chart_path=f"file://{bar_chart_path.absolute()}",
         donut_chart_path=f"file://{donut_chart_path.absolute()}"
     )

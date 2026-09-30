@@ -202,6 +202,34 @@
         </div>
     </div>
     
+    <h2>1. 주제별 투자 검토 의견 (5개 Profile)</h2>
+    <div style="display: flex; flex-wrap: wrap; justify-content: space-between;">
+        {% for profile_name, results in profiles_dict.items() %}
+        <div style="width: 48%; margin-bottom: 20px; background: #fff; padding: 10px; border: 1px solid #ddd; border-radius: 8px;">
+            <h3 style="margin-top:0; color: #002B5B; border-bottom: 2px solid #002B5B; padding-bottom: 5px;">{{ profile_name }} 관점</h3>
+            <table style="margin-bottom: 0;">
+                <thead>
+                    <tr>
+                        <th style="background:#f4f6f9; color:#333;">기업명</th>
+                        <th style="background:#f4f6f9; color:#333;">부여 점수</th>
+                        <th style="background:#f4f6f9; color:#333;">판정</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in results %}
+                    <tr>
+                        <td>{{ item.company }}</td>
+                        <td style="font-weight:bold;">{{ item.result.weighted_score | round(2) }}</td>
+                        <td>{{ item.result.recommendation }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endfor %}
+    </div>
+
+    <h2 style="margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd;">2. 최종 종합 평가 지표</h2>
     <table>
         <thead>
             <tr>
@@ -219,12 +247,12 @@
             {% for c in companies %}
             <tr>
                 <td>{{ c.company_name }}</td>
-                <td>{{ c.domain_scores['technology'] | round(1) }}</td>
-                <td>{{ c.domain_scores['market'] | round(1) }}</td>
-                <td>{{ c.domain_scores['finance'] | round(1) }}</td>
-                <td>{{ c.domain_scores['risk'] | round(1) }}</td>
-                <td>{{ c.domain_scores['team'] | round(1) }}</td>
-                <td>{{ c.average_score | round(1) }}</td>
+                <td>{{ c.domain_scores['technology'] | round(2) }}</td>
+                <td>{{ c.domain_scores['market'] | round(2) }}</td>
+                <td>{{ c.domain_scores['finance'] | round(2) }}</td>
+                <td>{{ c.domain_scores['risk'] | round(2) }}</td>
+                <td>{{ c.domain_scores['team'] | round(2) }}</td>
+                <td>{{ c.average_score | round(2) }}</td>
                 <td>{{ c.final_decision }}</td>
             </tr>
             {% endfor %}
