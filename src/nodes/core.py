@@ -54,7 +54,7 @@ def retrieve_evidence(state: InvestmentAgentState) -> dict:
                 is_direct=True
             )
             retrieved.append(ev)
-            
+
     return {"retrieved_evidence": retrieved}
 
 def validate_evidence(state: InvestmentAgentState) -> dict:
@@ -214,7 +214,7 @@ def generate_report(state: InvestmentAgentState) -> dict:
             if p.profile_name not in profiles_dict:
                 profiles_dict[p.profile_name] = []
             profiles_dict[p.profile_name].append((c.company_name, p))
-            
+
     for profile_name, results in profiles_dict.items():
         report += f"\n### {profile_name} 관점\n"
         for company_name, p in results:

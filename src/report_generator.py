@@ -80,7 +80,7 @@ def generate_pdf_report(comparison_result):
             if p.profile_name not in profiles_dict:
                 profiles_dict[p.profile_name] = []
             profiles_dict[p.profile_name].append({'company': c.company_name, 'result': p})
-            
+
     # Jinja2 렌더링
     env = Environment(loader=FileSystemLoader(str(base_dir / "src" / "templates")))
     template = env.get_template("report.html")

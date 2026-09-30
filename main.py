@@ -26,7 +26,7 @@ console = Console()
 def test_environment():
     """test_env.py 의 기능을 메인에 통합하여 환경 점검을 수행합니다."""
     console.print("\n[bold yellow]🔍 1단계: API 및 환경 변수 점검[/bold yellow]")
-    
+
     # 1. OpenAI 체크
     try:
         from langchain_openai import ChatOpenAI
@@ -69,7 +69,7 @@ def select_files_via_gui() -> list:
 def prepare_data_directory():
     """GUI로 파일을 선택받아 data/raw/ 폴더를 준비합니다."""
     console.print("[bold yellow]📂 2단계: 분석 대상 문서 로드[/bold yellow]")
-    
+
     raw_dir = Path(__file__).parent / "data" / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
     
@@ -196,9 +196,9 @@ def main():
 
     md_report_path = Path(__file__).parent / "output" / "final_multi_agent_report.md"
     pdf_report_path = Path(__file__).parent / "output" / "final_report.pdf"
-    
+
     console.print("\n" + "="*50)
-    
+
     if pdf_report_path.exists():
         console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{pdf_report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
         console.print("\n[bold cyan]📄 생성된 PDF 보고서를 자동으로 엽니다...[/bold cyan]")

@@ -21,7 +21,7 @@
             font-size: 12px;
             line-height: 1.6;
         }
-        
+
         .header {
             border-bottom: 2px solid #34495e;
             padding-bottom: 10px;
@@ -138,11 +138,11 @@
         <h2>최우선 검토 대상: {{ best_company.company_name }}</h2>
         <p>{{ best_company.summary_reason }}</p>
         <p class="summary-highlight">
-            최종 투자 판정: {{ best_company.final_decision }} 
+            최종 투자 판정: {{ best_company.final_decision }}
             (최고점: {{ best_company.average_score | round(2) }}점, 근거 충족률: {{ best_company.evidence_coverage | round(2) }}%)
         </p>
     </div>
-    
+
     <div>
         <h2 class="section-title" style="margin-top:20px;">기업별 최종 지표 요약</h2>
         <div style="text-align: center; margin-bottom: 20px;">
@@ -157,9 +157,9 @@
         <h1>Battery Intelligence 스타트업 투자검토 세부 결과</h1>
         <div class="meta">기준일: {{ date }}</div>
     </div>
-    
+
     <h2 class="section-title" style="margin-top:20px;">1. 에이전트 프로필별 상세 평가</h2>
-    
+
     {% for profile_name, results in profiles_dict.items() %}
     <div class="agent-view">
         <h3>▶ {{ profile_name }} 관점</h3>
@@ -181,17 +181,17 @@
     
     {% for c in companies %}
     <div class="final-eval">
-        <h3>▶ {{ c.company_name }} 
+        <h3>▶ {{ c.company_name }}
             <span class="{% if c.final_decision == '투자검토 추천' %}decision-pass{% else %}decision-fail{% endif %}" style="font-size: 13px; margin-left: 10px;">
                 [{{ c.final_decision }}]
             </span>
         </h3>
         <p><strong>최종 평균 점수:</strong> {{ c.average_score | round(2) }}점</p>
-        <p><strong>세부 평가 지표:</strong> 
-            기술(30%) {{ c.domain_scores['technology'] | round(2) }}점 | 
-            시장(20%) {{ c.domain_scores['market'] | round(2) }}점 | 
-            재무(20%) {{ c.domain_scores['finance'] | round(2) }}점 | 
-            안정성(15%) {{ c.domain_scores['risk'] | round(2) }}점 | 
+        <p><strong>세부 평가 지표:</strong>
+            기술(30%) {{ c.domain_scores['technology'] | round(2) }}점 |
+            시장(20%) {{ c.domain_scores['market'] | round(2) }}점 |
+            재무(20%) {{ c.domain_scores['finance'] | round(2) }}점 |
+            안정성(15%) {{ c.domain_scores['risk'] | round(2) }}점 |
             사업/팀(15%) {{ c.domain_scores['team'] | round(2) }}점
         </p>
     </div>
