@@ -1,6 +1,6 @@
 from typing import Dict, Any, List
-from src.schemas import ProfileResult, Domain
-from src.agents.profile import calculate_profile_score, LLMProfileOutput, load_profile_config
+from ...schemas import ProfileResult, Domain
+from ..profile import calculate_profile_score, LLMProfileOutput, load_profile_config
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
