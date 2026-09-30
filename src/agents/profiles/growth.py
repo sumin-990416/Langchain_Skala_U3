@@ -146,6 +146,15 @@ def calculate_growth_custom_score(
 
     return _clamp_score(score_total / scored_weight)
 
+from ._evidence import check_profile_evidence, attach_evidence_check, profile_decision
+
+
+# rubric.yaml의 항목 ID 기준. 담당자가 평가 범위에 맞게 조정할 수 있습니다.
+# 핵심 확인 항목: 시장 성장성, 고객 도입·계약
+EVIDENCE_POLICY = {
+    "min_coverage": 80.0,
+    "critical_items": ("mkt_01", "fin_02"),
+}
 
 def run_growth_agent(state: Any) -> ProfileResult:
     """김대훈 팀원이 담당하는 '성장형' 에이전트 커스텀 로직"""
@@ -157,6 +166,11 @@ def run_growth_agent(state: Any) -> ProfileResult:
     config = load_profile_config(profile_id)
     profile_name = config["name"]
     weights = config["weights"]
+
+    # 근거 부족이면 공통/커스텀 점수를 계산하지 않고 정상적으로 판단 유보를 반환합니다.
+    evidence_check = check_profile_evidence(state, config, **EVIDENCE_POLICY)
+    if not evidence_check.sufficient:
+        return evidence_check.hold_result(profile_name)
     
     # 공통 점수 계산 (도메인 점수 * 가중치)
     common_score = calculate_profile_score(state["domain_scores"], weights)
@@ -366,13 +380,6 @@ def run_growth_agent(state: Any) -> ProfileResult:
         "domain_scores_text": domain_scores_text,
         "evidence_text": evidence_text
     })
-
-    supporting_evidence_ids = list(dict.fromkeys(
-        growth_evaluation.supporting_evidence_ids + result.supporting_evidence_ids
-    ))
-    unknown_items = list(dict.fromkeys(
-        growth_evaluation.unknown_items + result.unknown_items
-    ))
     
     return ProfileResult(
         profile_name=profile_name,
@@ -383,4 +390,4 @@ def run_growth_agent(state: Any) -> ProfileResult:
         unknown_items=unknown_items,
         recommendation=result.recommendation,
         due_diligence_questions=result.due_diligence_questions
-    )
+    ), evidence_check)

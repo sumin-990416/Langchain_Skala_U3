@@ -3,6 +3,15 @@ from ...schemas import ProfileResult, Domain
 from ..profile import calculate_profile_score, LLMProfileOutput, load_profile_config
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
+from ._evidence import check_profile_evidence, attach_evidence_check, profile_decision
+
+
+# rubric.yaml의 항목 ID 기준. 담당자가 평가 범위에 맞게 조정할 수 있습니다.
+# 핵심 확인 항목: 수익모델, 고객 계약, 팀 실행력
+EVIDENCE_POLICY = {
+    "min_coverage": 80.0,
+    "critical_items": ("fin_01", "fin_02", "team_01"),
+}
 
 def run_business_agent(state: Any) -> ProfileResult:
     """정수민 팀원이 담당하는 '사업성중심형' 에이전트 커스텀 로직"""
@@ -14,6 +23,11 @@ def run_business_agent(state: Any) -> ProfileResult:
     config = load_profile_config(profile_id)
     profile_name = config["name"]
     weights = config["weights"]
+
+    # 근거 부족이면 공통/커스텀 점수를 계산하지 않고 정상적으로 판단 유보를 반환합니다.
+    evidence_check = check_profile_evidence(state, config, **EVIDENCE_POLICY)
+    if not evidence_check.sufficient:
+        return evidence_check.hold_result(profile_name)
     
     # 공통 점수 계산 (도메인 점수 * 가중치)
     common_score = calculate_profile_score(state["domain_scores"], weights)
@@ -79,23 +93,22 @@ def run_business_agent(state: Any) -> ProfileResult:
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
     structured_llm = llm.with_structured_output(LLMProfileOutput)
     
-    evidence_text = ""
-    for ev in state["validated_evidence"]:
-        evidence_text += f"- [ID: {ev.item_id}, Source: {ev.source_id}] (등급: {ev.evidence_grade}): {ev.content}\n"
-    if not evidence_text:
-        evidence_text = "확인된 근거가 없습니다."
-        
+    evidence_text = evidence_check.evidence_text
+
     prompt = ChatPromptTemplate.from_messages([
         ("system", """당신은 배터리 AI 스타트업 전문 심사역 '{profile_name}'입니다.
         
 당신의 투자 성향 및 최우선 판단 기준:
 {focus}
 
-제공된 '도메인별 평가 점수'와 '확인된 근거'를 바탕으로, 당신의 성향에 입각해 철저하게 편향된 투자의견을 도출하세요.
+제공된 '도메인별 평가 점수'와 '확인된 근거'를 바탕으로, 당신의 성향에 입각해 근거에 기반한 투자의견을 도출하세요.
+코드가 결정한 판정을 변경하지 말고 근거와 한계를 설명하세요. 미확인 수치를 추정하지 마세요.
 비즈니스 모델, 수익성, 그리고 팀의 실행력에 중점을 두어 평가를 진행해야 합니다."""),
         ("user", """
 [기업명]: {company_name}
 [당신의 최종 산출 점수 (공통 70% + 커스텀 30%)]: {final_score} / 100
+[코드가 결정한 판정]: {decision_text}
+[프로필 근거 충족률]: {coverage_text}%
 
 [도메인별 공통 점수]
 {domain_scores_text}
@@ -116,11 +129,13 @@ def run_business_agent(state: Any) -> ProfileResult:
         "focus": config["focus"],
         "company_name": company_name,
         "final_score": final_score,
+        "decision_text": profile_decision(final_score, evidence_check).value,
+        "coverage_text": f"{evidence_check.coverage:.1f}",
         "domain_scores_text": domain_scores_text,
         "evidence_text": evidence_text
     })
     
-    return ProfileResult(
+    return attach_evidence_check(ProfileResult(
         profile_name=profile_name,
         weighted_score=final_score,
         domain_contributions=result.domain_contributions.model_dump(),
@@ -129,4 +144,4 @@ def run_business_agent(state: Any) -> ProfileResult:
         unknown_items=result.unknown_items,
         recommendation=result.recommendation,
         due_diligence_questions=result.due_diligence_questions
-    )
+    ), evidence_check)
