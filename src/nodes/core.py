@@ -183,6 +183,13 @@ def compare_companies(state: InvestmentAgentState) -> dict:
             f"| {_format_score(c.domain_scores.get(Domain.TEAM))} "
             f"| {c.evidence_coverage:.1f}% "
             f"| {average_label} "
+            f"| {c.domain_scores.get(Domain.TECHNOLOGY, 0):.2f} "
+            f"| {c.domain_scores.get(Domain.MARKET, 0):.2f} "
+            f"| {c.domain_scores.get(Domain.FINANCE, 0):.2f} "
+            f"| {c.domain_scores.get(Domain.RISK, 0):.2f} "
+            f"| {c.domain_scores.get(Domain.TEAM, 0):.2f} "
+            f"| {c.evidence_coverage:.2f}% "
+            f"| {c.average_score:.2f} "
             f"| {c.final_decision} |\n"
         )
         
@@ -197,13 +204,31 @@ def generate_report(state: InvestmentAgentState) -> dict:
     # 1. 마크다운 리포트 생성
     report = f"""# 투자 심사 요약 보고서 (Multi-Agent RAG)
 
-## SUMMARY (종합 요약)
-본 보고서는 배터리 AI 스타트업 3개사에 대한 다각적 투자 심사 결과를 담고 있습니다.
+## 1. 프로필 에이전트별 투자 검토 의견
+다양한 투자 성향을 가진 5개의 에이전트가 평가한 결과입니다.
+"""
+    # 에이전트 관점별로 기업 묶기
+    profiles_dict = {}
+    for c in comp.companies:
+        for p in c.profile_results:
+            if p.profile_name not in profiles_dict:
+                profiles_dict[p.profile_name] = []
+            profiles_dict[p.profile_name].append((c.company_name, p))
+            
+    for profile_name, results in profiles_dict.items():
+        report += f"\n### {profile_name} 관점\n"
+        for company_name, p in results:
+            report += f"- **{company_name}**: {p.weighted_score:.2f}점 ({p.recommendation})\n"
+            # due_diligence_questions 나 상세 내용 추가 가능
 
-## 1. 종합 비교표
+    report += f"""
+## 2. 최종 종합 투자 지표 및 결론
+모든 에이전트의 의견을 종합한 최종 결과입니다.
+
+### 종합 비교표
 {comp.comparison_table}
 
-## 2. 기업별 상세
+### 기업별 종합 상세
 """
     for c in comp.companies:
         report += f"\n### {c.company_name} ({c.final_decision})\n"
@@ -239,6 +264,11 @@ def generate_report(state: InvestmentAgentState) -> dict:
 
         report += "\n#### 팀 및 경영진\n"
         report += "- 핵심 인력 전문성 확인\n"
+        report += f"\n#### {c.company_name} ({c.final_decision})\n"
+        report += f"- **평균 점수**: {c.average_score:.2f}점 (에이전트 간 편차: {c.score_std_dev:.2f})\n"
+        report += f"- **근거 충족률**: {c.evidence_coverage:.2f}%\n"
+        report += f"- **최종 요약**: {c.summary_reason}\n"
+        report += f"- **발견된 리스크 및 한계점**: 문서 기반 분석 중 발견된 리스크 요인들 검토 필요\n"
 
     report += "\n## REFERENCE (참고 자료)\n"
     report += "- ACCURE_RAG_source_pack.pdf\n"
