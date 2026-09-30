@@ -23,7 +23,7 @@ def run_growth_agent(state: Any) -> ProfileResult:
     # ==========================================
     # TODO: [김대훈]님, 근거(validated_evidence)나 도메인 점수를 활용해 
     # 성장형에 맞는 독자적인 커스텀 점수(0~100)를 산출하세요.
-    custom_score = 80.0  # 예시 기본값.
+    custom_score = 80.0  # 예시 기본값.,
     
     # 최종 점수 산출 (공통 70% + 커스텀 30%)
     final_score = round((common_score * 0.7) + (custom_score * 0.3), 2)
