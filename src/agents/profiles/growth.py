@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -28,28 +28,52 @@ GROWTH_PARAMETER_LABELS: Dict[str, str] = {
     "execution_capability": "성장 전략 실행역량",
 }
 
+GROWTH_EVIDENCE_THRESHOLD = 0.80
+GROWTH_CORE_PARAMETERS = {"customer_conversion", "revenue_growth"}
+
+GrowthEvidenceStatus = Literal[
+    "SUPPORTED",
+    "PARTIAL",
+    "UNKNOWN",
+    "NOT_APPLICABLE",
+    "CONTRADICTED",
+]
+
 def _clamp_score(value: float) -> float:
     """점수를 0~100 범위로 제한합니다."""
     return round(max(0.0, min(100.0, value)), 2)
 
 
-class GrowthParameterScores(BaseModel):
-    """공통 도메인 점수와 독립적으로 산출하는 성장형 전용 점수입니다."""
+class GrowthParameterAssessment(BaseModel):
+    """성장형 파라미터 하나의 근거 상태와 평가 결과입니다."""
 
-    market_growth: float = Field(ge=0, le=100, description="시장 성장률과 시장 확대 가능성")
-    customer_conversion: float = Field(
-        ge=0, le=100, description="파일럿에서 유료·반복 고객으로 전환된 증거"
+    status: GrowthEvidenceStatus
+    score: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description="SUPPORTED·PARTIAL·CONTRADICTED인 경우에만 부여하는 점수",
     )
-    revenue_growth: float = Field(ge=0, le=100, description="매출·ARR 성장성과 반복매출 증거")
-    scalability: float = Field(ge=0, le=100, description="제품·지역·고객군 확장 가능성")
-    data_network_effect: float = Field(
-        ge=0, le=100, description="데이터 축적이 성능과 진입장벽으로 연결되는 정도"
+    evidence_ids: List[str] = Field(
+        default_factory=list,
+        description="해당 파라미터 판정에 사용한 Source ID",
     )
-    execution_capability: float = Field(ge=0, le=100, description="성장전략을 실행한 실적")
+    reason: str = Field(description="근거 상태와 점수 판정 이유")
+
+
+class GrowthParameterAssessments(BaseModel):
+    """공통 도메인 점수와 독립적으로 산출하는 성장형 전용 평가입니다."""
+
+    market_growth: GrowthParameterAssessment
+    customer_conversion: GrowthParameterAssessment
+    revenue_growth: GrowthParameterAssessment
+    scalability: GrowthParameterAssessment
+    data_network_effect: GrowthParameterAssessment
+    execution_capability: GrowthParameterAssessment
 
 
 class GrowthCustomEvaluation(BaseModel):
-    parameter_scores: GrowthParameterScores
+    parameter_assessments: GrowthParameterAssessments
     rationale: str = Field(description="제공된 근거만 사용한 성장형 세부점수 산정 이유")
     supporting_evidence_ids: List[str] = Field(
         default_factory=list, description="성장형 점수 산정에 사용한 Source ID"
@@ -59,13 +83,68 @@ class GrowthCustomEvaluation(BaseModel):
     )
 
 
-def calculate_growth_custom_score(parameter_scores: Dict[str, float]) -> float:
-    """독립적으로 평가된 성장형 파라미터를 30% 반영용 점수로 합산합니다."""
-    custom_score = sum(
-        parameter_scores[key] * weight
-        for key, weight in GROWTH_PARAMETER_WEIGHTS.items()
+class GrowthEvidenceInsufficientError(ValueError):
+    """성장형 점수를 산출할 만큼 근거가 충분하지 않을 때 발생합니다."""
+
+
+def calculate_growth_evidence_coverage(
+    assessments: Dict[str, GrowthParameterAssessment],
+) -> Tuple[float, List[str], List[str]]:
+    """N/A를 제외한 가중치 기준 근거 충족률과 부족·제외 항목을 계산합니다."""
+    coverage_factor = {
+        "SUPPORTED": 1.0,
+        "CONTRADICTED": 1.0,
+        "PARTIAL": 0.5,
+        "UNKNOWN": 0.0,
+    }
+    applicable_weight = 0.0
+    covered_weight = 0.0
+    insufficient_parameters: List[str] = []
+    not_applicable_parameters: List[str] = []
+
+    for key, weight in GROWTH_PARAMETER_WEIGHTS.items():
+        assessment = assessments[key]
+        if assessment.status == "NOT_APPLICABLE":
+            not_applicable_parameters.append(key)
+            continue
+
+        applicable_weight += weight
+        covered_weight += weight * coverage_factor[assessment.status]
+
+        if assessment.status in {"UNKNOWN", "PARTIAL"}:
+            insufficient_parameters.append(key)
+
+    if applicable_weight == 0:
+        return 0.0, insufficient_parameters, not_applicable_parameters
+
+    return (
+        round(covered_weight / applicable_weight, 4),
+        insufficient_parameters,
+        not_applicable_parameters,
     )
-    return _clamp_score(custom_score)
+
+
+def calculate_growth_custom_score(
+    assessments: Dict[str, GrowthParameterAssessment],
+) -> float:
+    """점수 산출 조건을 통과한 확인 항목만 재가중해 성장형 점수를 계산합니다."""
+    score_total = 0.0
+    scored_weight = 0.0
+
+    for key, weight in GROWTH_PARAMETER_WEIGHTS.items():
+        assessment = assessments[key]
+        if assessment.status in {"NOT_APPLICABLE", "UNKNOWN"}:
+            continue
+        if assessment.score is None:
+            raise ValueError(f"점수가 필요한 성장형 파라미터입니다: {key}")
+
+        score_total += assessment.score * weight
+        scored_weight += weight
+
+    if scored_weight == 0:
+        raise GrowthEvidenceInsufficientError("채점 가능한 성장형 파라미터가 없습니다.")
+
+    return _clamp_score(score_total / scored_weight)
 
 
 def run_growth_agent(state: Any) -> ProfileResult:
@@ -126,9 +205,12 @@ def run_growth_agent(state: Any) -> ProfileResult:
 채점 원칙:
 1. 회사의 주장보다 A/B급 근거와 기업 직접성이 높은 자료를 우선합니다.
 2. 수치·계약·고객명이 확인된 실적을 단순 시장 전망보다 높게 평가합니다.
-3. 해당 항목의 근거가 없으면 임의로 추정하지 말고 50점을 부여한 뒤 unknown_items에 기록합니다.
-4. 부정 또는 상충 근거가 있으면 점수를 하향하고 rationale에 명시합니다.
-5. supporting_evidence_ids에는 입력에 존재하는 Source ID만 사용합니다."""),
+3. 근거가 충분하면 SUPPORTED, 일부만 확인되면 PARTIAL, 없으면 UNKNOWN으로 분류합니다.
+4. NOT_APPLICABLE은 평가 전에 제품·사업 범위상 적용 대상이 아님이 근거로 확인된 경우에만 사용합니다.
+5. UNKNOWN과 NOT_APPLICABLE에는 점수를 부여하지 않습니다.
+6. 부정 또는 상충 근거가 충분하면 CONTRADICTED로 분류하고 낮은 점수를 부여합니다.
+7. evidence_ids와 supporting_evidence_ids에는 입력에 존재하는 Source ID만 사용합니다.
+8. 파일럿의 유료 고객 전환과 매출·ARR 성장성은 점수 산출에 필요한 핵심 지표입니다."""),
             ("user", """
 [기업명]
 {company_name}
@@ -145,21 +227,71 @@ def run_growth_agent(state: Any) -> ProfileResult:
         })
     else:
         growth_evaluation = GrowthCustomEvaluation(
-            parameter_scores=GrowthParameterScores(
-                market_growth=50.0,
-                customer_conversion=50.0,
-                revenue_growth=50.0,
-                scalability=50.0,
-                data_network_effect=50.0,
-                execution_capability=50.0,
+            parameter_assessments=GrowthParameterAssessments(
+                market_growth=GrowthParameterAssessment(
+                    status="UNKNOWN", reason="검증된 근거 없음"
+                ),
+                customer_conversion=GrowthParameterAssessment(
+                    status="UNKNOWN", reason="검증된 근거 없음"
+                ),
+                revenue_growth=GrowthParameterAssessment(
+                    status="UNKNOWN", reason="검증된 근거 없음"
+                ),
+                scalability=GrowthParameterAssessment(
+                    status="UNKNOWN", reason="검증된 근거 없음"
+                ),
+                data_network_effect=GrowthParameterAssessment(
+                    status="UNKNOWN", reason="검증된 근거 없음"
+                ),
+                execution_capability=GrowthParameterAssessment(
+                    status="UNKNOWN", reason="검증된 근거 없음"
+                ),
             ),
-            rationale="검증된 성장 근거가 없어 모든 성장형 세부지표를 중립값으로 처리했습니다.",
+            rationale="검증된 성장 근거가 없어 모든 성장형 세부지표를 미확인 처리했습니다.",
             supporting_evidence_ids=[],
             unknown_items=list(GROWTH_PARAMETER_LABELS.values()),
         )
 
-    growth_parameter_scores = growth_evaluation.parameter_scores.model_dump()
-    custom_score = calculate_growth_custom_score(growth_parameter_scores)
+    growth_parameter_assessments = {
+        key: value
+        for key, value in growth_evaluation.parameter_assessments
+    }
+    (
+        growth_evidence_coverage,
+        insufficient_parameters,
+        not_applicable_parameters,
+    ) = calculate_growth_evidence_coverage(growth_parameter_assessments)
+
+    missing_core_parameters = [
+        key
+        for key in GROWTH_CORE_PARAMETERS
+        if growth_parameter_assessments[key].status not in {
+            "SUPPORTED",
+            "CONTRADICTED",
+        }
+    ]
+
+    if (
+        growth_evidence_coverage < GROWTH_EVIDENCE_THRESHOLD
+        or missing_core_parameters
+    ):
+        insufficient_labels = [
+            GROWTH_PARAMETER_LABELS[key]
+            for key in insufficient_parameters
+        ]
+        core_labels = [
+            GROWTH_PARAMETER_LABELS[key]
+            for key in missing_core_parameters
+        ]
+        raise GrowthEvidenceInsufficientError(
+            "성장형 점수 미산출 - "
+            f"근거 충족률 {growth_evidence_coverage * 100:.1f}% "
+            f"(기준 {GROWTH_EVIDENCE_THRESHOLD * 100:.0f}%), "
+            f"근거 부족 항목: {insufficient_labels or '없음'}, "
+            f"미확인 핵심 지표: {core_labels or '없음'}"
+        )
+
+    custom_score = calculate_growth_custom_score(growth_parameter_assessments)
     
     # 최종 점수 산출 (공통 70% + 커스텀 30%)
     final_score = _clamp_score((common_score * 0.7) + (custom_score * 0.3))
@@ -188,9 +320,13 @@ def run_growth_agent(state: Any) -> ProfileResult:
 [당신의 최종 산출 점수 (공통 70% + 커스텀 30%)]: {final_score} / 100
 [공통 평가 점수]: {common_score} / 100
 [성장형 세부 평가 점수]: {custom_score} / 100
+[성장형 근거 충족률]: {growth_evidence_coverage}%
 
 [성장형 세부 파라미터]
-{growth_parameter_scores_text}
+{growth_parameter_assessments_text}
+
+[평가 비대상 파라미터]
+{not_applicable_parameters_text}
 
 [성장형 독립평가 근거 요약]
 {growth_rationale}
@@ -209,11 +345,18 @@ def run_growth_agent(state: Any) -> ProfileResult:
         f"- {key.value if isinstance(key, Domain) else key}: {value}"
         for key, value in state["domain_scores"].items()
     )
-    growth_parameter_scores_text = "\n".join(
-        f"- {GROWTH_PARAMETER_LABELS[key]}: {score:.2f}점 "
-        f"(세부평가 내 비중 {GROWTH_PARAMETER_WEIGHTS[key] * 100:.0f}%)"
-        for key, score in growth_parameter_scores.items()
+    growth_parameter_assessments_text = "\n".join(
+        f"- {GROWTH_PARAMETER_LABELS[key]}: "
+        f"상태={assessment.status}, "
+        f"점수={assessment.score if assessment.score is not None else '미산출'}, "
+        f"가중치={GROWTH_PARAMETER_WEIGHTS[key] * 100:.0f}%, "
+        f"근거={assessment.evidence_ids or '없음'}"
+        for key, assessment in growth_parameter_assessments.items()
     )
+    not_applicable_parameters_text = ", ".join(
+        GROWTH_PARAMETER_LABELS[key]
+        for key in not_applicable_parameters
+    ) or "없음"
     result: LLMProfileOutput = chain.invoke({
         "profile_name": profile_name,
         "focus": config["focus"],
@@ -221,7 +364,9 @@ def run_growth_agent(state: Any) -> ProfileResult:
         "final_score": final_score,
         "common_score": common_score,
         "custom_score": custom_score,
-        "growth_parameter_scores_text": growth_parameter_scores_text,
+        "growth_evidence_coverage": round(growth_evidence_coverage * 100, 1),
+        "growth_parameter_assessments_text": growth_parameter_assessments_text,
+        "not_applicable_parameters_text": not_applicable_parameters_text,
         "growth_rationale": growth_evaluation.rationale,
         "domain_scores_text": domain_scores_text,
         "evidence_text": evidence_text
