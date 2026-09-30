@@ -22,9 +22,9 @@ def generate_pdf_report(comparison_result):
     if not companies:
         return None
         
-    # 점수 기준으로 정렬
-    companies_sorted = sorted(companies, key=lambda x: x.average_score, reverse=True)
-    best_company = companies_sorted[0]
+    # 미산출 점수는 순위에 포함하지 않는다.
+    scored_companies = [c for c in companies if c.average_score is not None]
+    best_company = max(scored_companies, key=lambda c: c.average_score, default=None)
     
     # 한글 폰트 설정 (Mac)
     plt.rcParams['font.family'] = 'AppleGothic'
@@ -34,17 +34,20 @@ def generate_pdf_report(comparison_result):
     bar_chart_path = images_dir / "bar_chart.png"
     plt.figure(figsize=(6, 3))
     names = [c.company_name for c in companies]
-    scores = [c.average_score for c in companies]
+    scores = [c.average_score if c.average_score is not None else 0 for c in companies]
     y_pos = np.arange(len(names))
     
     colors = ['#1976D2', '#4CAF50', '#9C27B0']
     plt.barh(y_pos, scores, color=colors, height=0.5)
     plt.yticks(y_pos, names)
+    plt.xlim(0, 110)
     plt.gca().invert_yaxis()  # 상위 항목이 위에 오도록
     
     # 레이블 추가
-    for i, v in enumerate(scores):
-        plt.text(v + 1, i, f"{v:.1f}", va='center')
+    for i, company in enumerate(companies):
+        score = company.average_score
+        label = "점수 없음" if score is None else f"{score:.1f}"
+        plt.text(1 if score is None else score + 1, i, label, va='center')
         
     plt.box(False)
     plt.tight_layout()
