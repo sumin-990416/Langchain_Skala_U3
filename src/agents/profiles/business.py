@@ -23,7 +23,43 @@ def run_business_agent(state: Any) -> ProfileResult:
     # ==========================================
     # TODO: [정수민]님, 근거(validated_evidence)나 도메인 점수를 활용해 
     # 사업성중심형에 맞는 독자적인 커스텀 점수(0~100)를 산출하세요.
-    custom_score = 80.0  # 예시 기본값
+    # 1. 재무 및 시장 도메인 가중 평가 (최대 40점)
+    # 사업성 중심이므로 MARKET과 FINANCE 점수가 평균 80 이상이면 만점(40), 그 이하면 차감
+    market_score = state.get("domain_scores", {}).get(Domain.MARKET, 0)
+    finance_score = state.get("domain_scores", {}).get(Domain.FINANCE, 0)
+    avg_biz_score = (market_score + finance_score) / 2
+    
+    biz_base_points = min(40.0, (avg_biz_score / 100.0) * 40.0)
+    
+    # 2. 확실한 비즈니스 근거 유무 (최대 40점)
+    # 고객, 매출, 계약, 수익 등 사업성 팩트 기반 키워드 검색
+    biz_keywords = ["매출", "계약", "수익", "bm", "고객", "b2b", "파트너십", "상용화", "유료", "revenue", "customer", "contract", "commercial"]
+    biz_evidence_count = 0
+    high_grade_biz_evidence = 0
+    
+    for ev in state.get("validated_evidence", []):
+        content_lower = ev.content.lower()
+        if any(kw in content_lower for kw in biz_keywords):
+            biz_evidence_count += 1
+            if getattr(ev, "evidence_grade", "C") in ["A", "B"]:
+                high_grade_biz_evidence += 1
+                
+    # 근거 1개당 10점, A/B 등급이면 추가 10점 (최대 40점)
+    evidence_points = min(40.0, (biz_evidence_count * 10.0) + (high_grade_biz_evidence * 10.0))
+    
+    # 3. 직접성 페널티 및 보너스 (최대 20점)
+    # 팩트가 기업과 직접 연관된 증거(is_direct=True)가 얼마나 되는가?
+    direct_ev_count = sum(1 for ev in state.get("validated_evidence", []) if getattr(ev, "is_direct", False))
+    direct_points = min(20.0, direct_ev_count * 10.0)
+    
+    # 총 커스텀 점수 합산
+    custom_score = biz_base_points + evidence_points + direct_points
+    
+    # [과락 시스템] 시장/재무 점수가 60점 미만이거나 명확한 매출/고객 근거가 없으면 가차없이 50% 삭감
+    if avg_biz_score < 60 or biz_evidence_count == 0:
+        custom_score = custom_score * 0.5
+        
+    custom_score = round(max(0.0, min(100.0, custom_score)), 2)
     
     # 최종 점수 산출 (공통 70% + 커스텀 30%)
     final_score = round((common_score * 0.7) + (custom_score * 0.3), 2)
