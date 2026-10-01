@@ -18,6 +18,16 @@ class FinalDecision(str, Enum):
     HOLD_GATE = "투자 보류 및 추가 실사"
     HOLD_SCORE = "보류 (기준 미달)"
 
+
+class ResultCategory(str, Enum):
+    """점수와 별개로 결과가 어떤 상태에서 만들어졌는지 표시합니다."""
+
+    COMPLETE = "평가 완료"
+    PARTIAL_EVIDENCE = "일부 근거 부족"
+    INSUFFICIENT_EVIDENCE = "근거 부족"
+    NEEDS_DUE_DILIGENCE = "추가 실사"
+    EXECUTION_ERROR = "평가 오류"
+
 # --- Data Models (Pydantic) ---
 
 class Company(BaseModel):
@@ -39,22 +49,46 @@ class Evidence(BaseModel):
 
 class ProfileResult(BaseModel):
     profile_name: str = Field(description="기술·안정·성장·균형·사업 중 하나")
-    weighted_score: float = Field(description="해당 Profile 가중치를 적용한 0~100점")
+    weighted_score: Optional[float] = Field(
+        default=None, ge=0, le=100, allow_inf_nan=False,
+        description="해당 Profile 가중치를 적용한 0~100점. 근거 부족으로 미산출이면 None"
+    )
+    decision: Optional[FinalDecision] = Field(
+        default=None, description="구조화된 프로필 판정. 종합 단계에서 판단 유보를 전달하는 데 사용"
+    )
+    evidence_coverage: Optional[float] = Field(
+        default=None, ge=0, le=100, allow_inf_nan=False,
+        description="해당 프로필의 근거 충족률(0~100%). 계산하지 않은 프로필은 None"
+    )
+    result_category: ResultCategory = Field(
+        default=ResultCategory.COMPLETE,
+        description="평가 완료·일부 근거 부족·근거 부족·추가 실사·평가 오류",
+    )
     domain_contributions: Dict[str, float] = Field(default_factory=dict, description="영역별 점수·가중치·기여점수")
     supporting_evidence_ids: List[str] = Field(default_factory=list, description="찬성 근거 ID")
     contrary_evidence_ids: List[str] = Field(default_factory=list, description="반대·상충 근거 ID")
     unknown_items: List[str] = Field(default_factory=list, description="공개자료로 확인하지 못한 항목")
     recommendation: str = Field(description="추천·조건부 검토·보류")
     due_diligence_questions: List[str] = Field(default_factory=list, description="투자 전 추가 확인 질문")
+    error_message: str = Field(
+        default="", description="에이전트 실행 실패 시 보고서에 표시할 비민감 오류 요약"
+    )
 
 class CompanyResult(BaseModel):
     company_name: str
     domain_scores: Dict[Domain, float]
     evidence_coverage: float
     profile_results: List[ProfileResult]
-    average_score: float
-    score_std_dev: float
+    average_score: Optional[float] = Field(
+        default=None, ge=0, le=100, allow_inf_nan=False,
+        description="산출된 프로필 점수의 평균. 모두 미산출이면 None"
+    )
+    score_std_dev: Optional[float] = Field(
+        default=None, ge=0, allow_inf_nan=False,
+        description="산출된 프로필 점수의 모집단 표준편차. 모두 미산출이면 None"
+    )
     final_decision: str
+    result_category: ResultCategory = ResultCategory.COMPLETE
     summary_reason: str
 
 class ComparisonResult(BaseModel):

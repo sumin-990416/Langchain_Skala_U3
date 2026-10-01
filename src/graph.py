@@ -57,11 +57,8 @@ def route_next_company(state: InvestmentAgentState) -> Literal["select_company",
     else:
         return "compare_companies"
 
-def route_report_validation(state: InvestmentAgentState) -> Literal["generate_report", END]:
-    """보고서 검증을 통과했는지 확인합니다."""
-    errors = state.get("report_errors", [])
-    if len(errors) > 0:
-        return "generate_report"
+def route_report_validation(state: InvestmentAgentState) -> str:
+    """검증 오류는 결과에 남기고 종료하여 무한 재생성 루프를 방지합니다."""
     return END
 
 def build_graph() -> StateGraph:
@@ -128,7 +125,6 @@ def build_graph() -> StateGraph:
         "validate_report",
         route_report_validation,
         {
-            "generate_report": "generate_report",
             END: END
         }
     )
