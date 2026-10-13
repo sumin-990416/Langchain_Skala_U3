@@ -186,19 +186,22 @@ def main():
                         progress.update(task_id, description=f"[bold yellow]심층 분석 진행 중: {c.name}[/bold yellow]")
                         console.print(f"\n🎯 [bold yellow]타겟 기업 설정됨:[/bold yellow] {c.name}")
                         
-                elif node_name == "profile_agent":
-                    console.print(" ➔ 👥 Orchestrator가 계획한 프로필 Worker 분석 완료")
+                elif node_name.startswith("worker_"):
+                    console.print(f" ➔ 👥 {node_name} 평가 완료")
                     progress.update(task_id, description=f"[cyan]다중 관점 평가 종합 중...[/cyan]")
 
-                elif node_name == "plan_profile_tasks":
+                elif node_name == "orchestrator_plan_workers":
                     tasks = node_state.get("profile_task_plan", [])
-                    console.print(f" ➔ 🧭 Orchestrator 작업 계획: {len(tasks)}개 Worker")
+                    console.print(
+                        f" ➔ 🧭 Orchestrator가 {len(tasks)}개 Worker 작업을 계획"
+                    )
 
                 elif node_name == "plan_report_review":
                     tasks = node_state.get("report_review_plan", [])
                     console.print(f" ➔ 🛠️ 품질 평가 기반 선택 재작업: {len(tasks)}개 Worker")
                     
-                elif node_name == "synthesize_company":
+                elif node_name == "synthesizer_aggregate_company":
+                    console.print(" ➔ 🧩 Synthesizer가 5개 관점 결과 집계 완료")
                     res = node_state.get("company_result")
                     if res:
                         color = "green" if "추천" in res.final_decision or "RECOMMEND" in res.final_decision else "red"

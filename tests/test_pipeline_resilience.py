@@ -4,7 +4,13 @@ from pathlib import Path
 
 from pypdf import PdfReader
 from src.agents.profile import get_all_profiles, plan_profile_tasks, profile_agent_node
-from src.graph import build_graph_run_config, route_report_quality, route_to_profiles
+from src.graph import (
+    PROFILE_WORKER_NODES,
+    build_graph,
+    build_graph_run_config,
+    route_report_quality,
+    route_to_profiles,
+)
 from src.nodes.report_quality import (
     _rule_checks,
     evaluate_report_quality,
@@ -127,8 +133,27 @@ class PipelineResilienceTest(unittest.TestCase):
         })
 
         self.assertEqual(len(sends), 1)
+        self.assertEqual(sends[0].node, "worker_균형형")
         self.assertEqual(sends[0].arg["task_id"], task["task_id"])
         self.assertEqual(sends[0].arg["profile_name"], task["profile_name"])
+
+    def test_langgraph_trace_exposes_orchestrator_and_named_profile_workers(self):
+        workflow = build_graph()
+        nodes = set(workflow.nodes)
+
+        self.assertIn("orchestrator_plan_workers", nodes)
+        self.assertIn("synthesizer_aggregate_company", nodes)
+        self.assertEqual(
+            {node for node in nodes if node.startswith("worker_")},
+            {
+                "worker_기술중심형",
+                "worker_안정형",
+                "worker_성장형",
+                "worker_균형형",
+                "worker_사업성중심형",
+            },
+        )
+        self.assertEqual(len(set(PROFILE_WORKER_NODES.values())), 5)
 
     def test_hybrid_report_rules_check_references_neutrality_and_source_balance(self):
         profile = make_profile("기술중심형", 75, ResultCategory.COMPLETE, 90).model_copy(

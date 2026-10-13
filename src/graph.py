@@ -27,6 +27,19 @@ from src.nodes.report_quality import (
     synthesize_report_corrections,
 )
 
+PROFILE_WORKER_NODES = {
+    "technology_focused": "worker_기술중심형",
+    "stability_focused": "worker_안정형",
+    "growth_focused": "worker_성장형",
+    "balanced": "worker_균형형",
+    "business_focused": "worker_사업성중심형",
+    "기술중심형": "worker_기술중심형",
+    "안정형": "worker_안정형",
+    "성장형": "worker_성장형",
+    "균형형": "worker_균형형",
+    "사업성중심형": "worker_사업성중심형",
+}
+
 
 def build_graph_run_config(trace_id: str) -> dict:
     """Attach searchable LangSmith run metadata to each complete graph execution."""
@@ -54,17 +67,22 @@ def route_evidence_check(state: InvestmentAgentState) -> Literal["score_common",
             return "record_unknown"
 
 def route_to_profiles(state: InvestmentAgentState):
-    """Send one worker for each task in the Orchestrator's current plan."""
-    return [
-        Send("profile_agent", {
+    """Route each planned profile task to its visibly named worker node."""
+    sends = []
+    for task in state.get("profile_task_plan", []):
+        worker_node = PROFILE_WORKER_NODES.get(task["profile_name"])
+        if worker_node is None:
+            raise ValueError(
+                f"프로필 Worker 노드가 등록되지 않았습니다: {task['profile_name']}"
+            )
+        sends.append(Send(worker_node, {
             "task_id": task["task_id"],
             "profile_name": task["profile_name"],
             "domain_scores": state.get("domain_scores", {}),
             "validated_evidence": state.get("validated_evidence", []),
             "current_company": state.get("current_company")
-        })
-        for task in state.get("profile_task_plan", [])
-    ]
+        }))
+    return sends
 
 def route_next_company(state: InvestmentAgentState) -> Literal["select_company", "compare_companies"]:
     """남은 기업이 있는지 확인합니다."""
@@ -130,9 +148,10 @@ def build_graph() -> StateGraph:
     workflow.add_node("rewrite_query", rewrite_query)
     workflow.add_node("record_unknown", record_unknown)
     workflow.add_node("score_common", score_common)
-    workflow.add_node("plan_profile_tasks", plan_profile_tasks)
-    workflow.add_node("profile_agent", profile_agent_node)
-    workflow.add_node("synthesize_company", synthesize_company)
+    workflow.add_node("orchestrator_plan_workers", plan_profile_tasks)
+    for worker_node in set(PROFILE_WORKER_NODES.values()):
+        workflow.add_node(worker_node, profile_agent_node)
+    workflow.add_node("synthesizer_aggregate_company", synthesize_company)
     workflow.add_node("save_company_result", save_company_result)
     workflow.add_node("compare_companies", compare_companies)
     workflow.add_node("generate_report", generate_report)
@@ -165,11 +184,17 @@ def build_graph() -> StateGraph:
     workflow.add_edge("record_unknown", "score_common")
 
     # Plan first, then dynamically fan out only the tasks stored in State.
-    workflow.add_edge("score_common", "plan_profile_tasks")
-    workflow.add_conditional_edges("plan_profile_tasks", route_to_profiles, ["profile_agent"])
-    workflow.add_edge("profile_agent", "synthesize_company")
+    worker_nodes = sorted(set(PROFILE_WORKER_NODES.values()))
+    workflow.add_edge("score_common", "orchestrator_plan_workers")
+    workflow.add_conditional_edges(
+        "orchestrator_plan_workers",
+        route_to_profiles,
+        worker_nodes,
+    )
+    for worker_node in worker_nodes:
+        workflow.add_edge(worker_node, "synthesizer_aggregate_company")
     
-    workflow.add_edge("synthesize_company", "save_company_result")
+    workflow.add_edge("synthesizer_aggregate_company", "save_company_result")
 
     # 조건부 엣지: 남은 기업?
     workflow.add_conditional_edges(
