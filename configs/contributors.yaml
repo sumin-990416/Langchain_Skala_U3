@@ -1,0 +1,32 @@
+# 작업 분담 계획입니다. 실제 완료·GitHub 기여 여부는 각자의 커밋/PR로 확인합니다.
+contributors:
+  - name: 손연우
+    profile: 기술중심형
+    responsibility: 기술·BMS/ESS 근거와 기술 Agent 검증
+    ownership: src/agents/profiles/technology.py
+    prior_pr: 4
+    prior_commit: f95f3a9
+  - name: 강도희
+    profile: 안정형
+    responsibility: 안전·규제·재무 리스크와 안정 Agent 검증
+    ownership: src/agents/profiles/stability.py
+    prior_pr: 7
+    prior_commit: f13a1d4
+  - name: 김대훈
+    profile: 성장형
+    responsibility: 시장·고객 확장성과 성장 Agent 검증
+    ownership: src/agents/profiles/growth.py
+    prior_pr: 5
+    prior_commit: 4fd6efc
+  - name: 이연주
+    profile: 균형형
+    responsibility: 근거 편향·영역 균형·품질 평가 검증
+    ownership: src/agents/profiles/balanced.py
+    prior_pr: 6
+    prior_commit: f987e11
+  - name: 정수민
+    profile: 사업성중심형
+    responsibility: 사업모델·통합 그래프·보고서 생성 검증
+    ownership: src/agents/profiles/business.py
+    prior_pr: 2
+    prior_commit: acae2f5

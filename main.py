@@ -1,10 +1,14 @@
 import warnings
 warnings.filterwarnings("ignore")
 
+import argparse
 import os
 import sys
 import shutil
 from pathlib import Path
+from uuid import uuid4
+from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from dotenv import load_dotenv
 
 # GUI 파일 선택창을 위한 tkinter
@@ -16,7 +20,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
 
-from src.graph import graph
+from src.graph import build_graph
 from src.schemas import InvestmentAgentState
 from src.rag.ingest import ingest_documents
 
@@ -104,28 +108,73 @@ def prepare_data_directory():
         console.print(f"[green]✔ 총 {len(file_paths)}개의 파일을 로드했습니다.[/green]\n")
 
 
+def stream_with_checkpoint(initial_state, run_id, resume=False):
+    """SQLite 체크포인트를 유지하며 실행하거나 같은 run_id를 재개한다."""
+    checkpoint_path = Path(__file__).parent / ".cache" / "checkpoints.sqlite"
+    checkpoint_path.parent.mkdir(exist_ok=True)
+    config = {
+        "configurable": {"thread_id": run_id},
+        "metadata": {"run_id": run_id},
+        "max_concurrency": 3,
+    }
+    with SqliteSaver.from_conn_string(str(checkpoint_path)) as saver:
+        saver.serde = JsonPlusSerializer(allowed_msgpack_modules=[
+            ("src.schemas", name) for name in (
+                "Company", "Domain", "Question", "ResearchTask", "Evidence",
+                "ResearchResult", "ResearchSynthesis", "ProfileResult",
+                "CompanyResult", "ComparisonResult", "ReportEvaluation",
+                "WorkflowError", "FinalDecision",
+            )
+        ])
+        compiled = build_graph(checkpointer=saver)
+        if resume:
+            snapshot = compiled.get_state(config)
+            if not snapshot.values:
+                raise ValueError(f"재개할 run_id를 찾을 수 없습니다: {run_id}")
+            if not snapshot.next:
+                return
+        yield from compiled.stream(None if resume else initial_state, config=config)
+
+
 def main():
+    parser = argparse.ArgumentParser(description="배터리 스타트업 투자평가")
+    parser.add_argument("--resume", metavar="RUN_ID", help="중단된 실행 재개")
+    args = parser.parse_args()
     console.print(Panel.fit("[bold cyan]배터리 스타트업 투자평가 Multi-Agent 파이프라인[/bold cyan] 🚀", border_style="cyan"))
     
     # 1. 환경 점검
     test_environment()
     
     # 2. 파일 선택 다이얼로그 (프로그램화)
-    prepare_data_directory()
+    if not args.resume:
+        prepare_data_directory()
     
     # 3. 문서 임베딩 (Data Ingestion)
-    console.print("[bold yellow]🧠 3단계: 문서 스캔 및 지식 베이스 구축[/bold yellow]")
-    with console.status("[bold green]문서 청킹 및 FAISS 벡터 DB 구축 중...[/bold green]", spinner="dots"):
-        ingest_documents()
-    console.print("[green]✔ 문서 임베딩 완료[/green]\n")
+    if not args.resume:
+        console.print("[bold yellow]🧠 3단계: 문서 스캔 및 지식 베이스 구축[/bold yellow]")
+        with console.status("[bold green]문서 청킹 및 FAISS 벡터 DB 구축 중...[/bold green]", spinner="dots"):
+            ingest_documents()
+        console.print("[green]✔ 문서 임베딩 완료[/green]\n")
     
     # 4. Multi-Agent Graph 구동
     console.print("[bold yellow]🤖 4단계: Multi-Agent 투자 심사 진행[/bold yellow]")
     initial_state = InvestmentAgentState(
+        run_id=args.resume or str(uuid4()),
+        status="RUNNING",
+        termination_reason="",
+        plan_version=0,
+        plan_error="",
+        evidence_retry_count=0,
+        max_evidence_retries=2,
+        report_retry_count=0,
+        max_report_retries=2,
         selected_companies=[],
         current_index=0,
         current_company=None,
         evaluation_questions=[],
+        research_tasks=[],
+        research_results=[],
+        research_synthesis=None,
         current_question=None,
         retrieved_evidence=[],
         validated_evidence=[],
@@ -139,10 +188,15 @@ def main():
         final_comparison=None,
         used_sources=[],
         report_draft="",
+        report_uri="",
         report_errors=[],
+        report_evaluation=None,
         errors=[]
     )
     
+    console.print(f"[dim]실행 ID: {initial_state['run_id']}[/dim]")
+    final_status = None
+    final_report_uri = None
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -151,7 +205,8 @@ def main():
         
         task_id = progress.add_task("[cyan]에이전트 네트워크 준비 중...", total=None)
         
-        for event in graph.stream(initial_state):
+        for event in stream_with_checkpoint(initial_state, initial_state["run_id"],
+                                            resume=bool(args.resume)):
             for node_name, node_state in event.items():
                 if node_name == "load_inputs":
                     companies = node_state.get("selected_companies", [])
@@ -183,18 +238,49 @@ def main():
                     console.print(" ➔ 📑 투자 심사 마크다운 보고서 생성 완료")
                     progress.update(task_id, description="[magenta]보고서 저장 중...[/magenta]")
                     
-                elif node_name in ["build_questions", "retrieve_evidence", "score_common"]:
+                elif node_name == "orchestrator":
+                    tasks = node_state.get("research_tasks", [])
+                    console.print(f" ➔ 🧩 Orchestrator가 조사 작업 {len(tasks)}개를 생성")
+                    progress.update(task_id, description="[magenta]Research Worker 병렬 실행 중...[/magenta]")
+
+                elif node_name == "research_worker":
+                    result = node_state.get("research_results", [None])[0]
+                    if result:
+                        console.print(
+                            f" ➔ 🔎 {result.task.task_id}: {result.status}, "
+                            f"근거 {len(result.evidence)}건, {result.duration_ms}ms"
+                        )
+
+                elif node_name == "synthesize_research":
+                    evidence = node_state.get("retrieved_evidence", [])
+                    console.print(f" ➔ 🧬 병렬 조사 결과 통합: 근거 {len(evidence)}건")
+
+                elif node_name == "validate_report":
+                    quality = node_state.get("report_evaluation")
+                    if quality:
+                        console.print(f" ➔ 🧪 보고서 품질 평가: {'통과' if quality.passed else '재검토'}")
+
+                elif node_name == "save_report":
+                    final_status = node_state.get("status")
+                    final_report_uri = node_state.get("report_uri")
+
+                elif node_name in ["score_common"]:
                     progress.update(task_id, description=f"[magenta]에이전트 노드 통과: {node_name}[/magenta]")
                     console.print(f" ➔ ✨ Sub-Agent 작업 완료: {node_name}")
                     
-        progress.update(task_id, description="[bold green]Multi-Agent 파이프라인 실행 완료![/bold green]")
+        progress.update(task_id, description="[bold green]파이프라인 실행 종료[/bold green]")
 
-    report_path = Path(__file__).parent / "output" / "final_multi_agent_report.md"
+    report_path = Path(final_report_uri) if final_report_uri else None
     console.print("\n" + "="*50)
-    console.print(Panel(f"[bold green]✅ 파이프라인 실행 완료[/bold green]\n최종 투자 심사 보고서가 [bold yellow]{report_path.name}[/bold yellow]에 저장되었습니다.", border_style="green"))
+    if final_status == "COMPLETE":
+        console.print(Panel(f"[bold green]✅ 품질 평가 통과[/bold green]\n보고서: [bold yellow]{report_path.name}[/bold yellow]", border_style="green"))
+    elif final_status:
+        console.print(Panel(f"[bold yellow]⚠ 품질 평가 또는 PDF 생성 미완료: {final_status}[/bold yellow]\n검토용 초안: {report_path.name if report_path else '없음'}", border_style="yellow"))
+    else:
+        console.print(Panel("[yellow]실행이 이미 종료되었거나 재개할 단계가 없습니다.[/yellow]", border_style="yellow"))
 
     # 5. 보고서 자동 실행 (Mac OS 기준 open 명령어)
-    if report_path.exists():
+    if report_path and report_path.exists():
         console.print("\n[bold cyan]📄 생성된 투자 보고서를 자동으로 엽니다...[/bold cyan]")
         os.system(f"open '{report_path}'")
 

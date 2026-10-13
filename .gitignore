@@ -6,10 +6,10 @@ venv/
 
 # Env & secrets
 .env
-.env.*
 
 # OS / Editor 
 .DS_Store
 .vscode/
+.cache/
 
 # 환경 스캐폴딩

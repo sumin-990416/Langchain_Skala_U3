@@ -3,9 +3,85 @@
 > **SKALA 4기 · 울산 3반 · 4조**
 > 팀원: 김대훈 · 강도희 · 이연주 · 정수민 · 손연우
 
-LangGraph 기반 다중 에이전트(Multi-Agent)와 Agentic RAG를 활용하여, 배터리 분석 AI 스타트업의 비정형 문서를 수집·검증하고 **5가지 서로 다른 투자 관점**으로 병렬 평가한 뒤 최종 투자 검토 보고서를 자동 생성하는 파이프라인입니다.
+LangGraph의 **Orchestrator–Workers 패턴**과 다중 에이전트(Multi-Agent) 평가를 활용하여, 배터리 분석 AI 스타트업의 조사 작업을 런타임에 분해·병렬 검색하고 **5가지 서로 다른 투자 관점**으로 다시 병렬 평가한 뒤 최종 투자 검토 보고서를 자동 생성하는 파이프라인입니다.
+
+## Contributor 역할 분담 및 제출 보고서
+
+`configs/contributors.yaml`은 팀의 **담당 계획**입니다. [CONTRIBUTORS.md](CONTRIBUTORS.md)에는 원격 `dev`에서 확인한 기존 팀원별 PR·커밋과 이번 검증 책임을 구분해 적었습니다. 이 역할표 자체는 GitHub의 현재 `main` Contributors 기록을 바꾸지 않습니다. 각 담당자가 본인 계정으로 코드를 커밋하고 해당 브랜치에 반영해야 실제 기여자로 표시됩니다.
+
+| 담당자 | 주 담당 | 검증·산출물 |
+|---|---|---|
+| 손연우 | 기술중심형 | BMS/ESS·모델 성능 근거, 기술 Agent 테스트 |
+| 강도희 | 안정형 | 안전·규제·재무 리스크 근거, 안정 Agent 테스트 |
+| 김대훈 | 성장형 | 시장·고객 확장성 근거, 성장 Agent 테스트 |
+| 이연주 | 균형형 | 근거 편향·영역 균형, 품질 평가 테스트 |
+| 정수민 | 사업성중심형·통합 | 사업모델, LangGraph 통합, 보고서 생성 테스트 |
+
+품질 검증을 통과하면 ReportLab이 `output/report.pdf`에 **A4 10쪽 보고서**를 생성합니다. 1쪽 표지, 2쪽 요약, 3쪽 방법, 4쪽 비교, 5~7쪽 기업별 분석, 8쪽 담당 관점, 9쪽 근거 품질, 10쪽 추가 실사·출처 순서입니다. 실패한 실행은 PDF를 새로 만들지 않고 `output/final_multi_agent_report.md`에 검토용 초안을 남깁니다. 기존 PDF가 남아 있다면 현재 실행의 성공 증거로 사용하지 마세요.
+
+`output/pdf/report-layout-preview.pdf`는 **합성 테스트 데이터로 만든 레이아웃 미리보기**이며 모든 쪽에 표시가 있습니다. 투자 판단이나 제출용 `report.pdf`로 사용하지 않습니다. 원격 `dev`의 기존 8쪽 PDF와 요약·근거카드 PDF도 확인했지만, 요약본을 독립 원본으로 중복 계산할 수 없어 로컬 최종 보고서의 출처 요건을 충족한 것으로 간주하지 않았습니다.
+
+## 과제 요구사항 명세 및 구현 대응
+
+기준: `Multi-Agent Orchestration.pdf`의 Orchestrator–Workers 필수 항목, State Schema 질문, 보고서 품질 평가 항목. 아래 표는 현재 코드에서 확인 가능한 동작을 기준으로 작성했습니다.
+
+| 요구사항 | 구현·판정 기준 | 코드 위치 |
+|---|---|---|
+| 구조화된 동적 계획 | Orchestrator가 기업별 `ResearchTask` 3~5개를 생성하고 `research_tasks`에 저장. `validate_plan`이 5개 평가 영역, 고유 ID, 목표, 성공 기준을 확인하고 실패 시 rubric 계획으로 대체 | `src/nodes/core.py`, `src/schemas.py` |
+| 동적 Fan-out | 계획 수립 뒤 `Send` 목록을 생성. 계획의 실제 작업 수와 내용에 따라 Worker 실행 | `src/graph.py:assign_research_workers` |
+| 병렬 결과·Synthesis 분리 | Worker는 자신의 `ResearchResult`만 반환하고 reducer가 병합. `synthesize_research`는 결과를 정렬·중복 제거하고 성공/실패/빈 결과 및 누락 영역을 계산 | `src/schemas.py`, `src/nodes/core.py` |
+| Worker 일부 실패 | 검색 오류는 Worker 안에서 최대 2회 시도한 후 `FAILED` 결과와 구조화 오류를 반환. 성공한 Worker 결과는 계속 사용. 근거 부족 시 전체 조사 계획을 최대 2회 재실행하고, 이후 미확인으로 기록 | `src/nodes/core.py`, `src/graph.py` |
+| 제어와 페이로드 분리 | `run_id`, `status`, `plan_version`, 재시도 상한은 제어 필드. `research_tasks`, `research_results`, `research_synthesis`, `validated_evidence`는 작업 데이터 | `src/schemas.py:InvestmentAgentState` |
+| 지속성 비용 | Worker가 State에 넣는 문서 본문을 청크당 500자로 제한. 기업 완료 시 현재 Worker 결과를 초기화하고 최종 보고서는 `report_uri`만 남김 | `src/nodes/core.py`, `src/schemas.py` |
+| 동시 쓰기·종료 보장 | `research_results`, `profile_results`, `company_results`, `errors`에 reducer 적용. 근거 조사와 보고서 수정은 각각 상한 2회 | `src/schemas.py`, `src/graph.py` |
+| 보고서 품질 평가 | 생성 후 `validate_report`에서 근거 ID, 기술 우열 단정 표현, 기업별 독립 원본 문서 2개 이상을 검사. 미달이면 최대 2회 생성·평가 후 미통과 상태를 명시하여 저장 | `src/nodes/core.py`, `src/graph.py` |
+| 재개·관측성 | SQLite checkpointer에 단계별 상태를 저장하고 `--resume RUN_ID`로 재개. State의 `run_id`·`task_id`와 Worker별 상태·시도·소요 시간을 기록. 상세 호출 추적은 LangSmith 환경 설정에 따름 | `main.py`, `src/schemas.py` |
+
+### 교안 예제에서 실제 코드로 옮긴 구조
+
+```text
+select_company
+  → orchestrator (ResearchPlan 구조화 출력)
+  → validate_plan
+  → Send(research_worker, WorkerState) × 계획된 작업 수
+  → research_results reducer (Worker 원시 결과)
+  → synthesize_research (근거 취합·작업 상태 집계)
+  → validate_evidence
+      ├─ 충분: 공통 평가 → Profile Agent 병렬 평가
+      └─ 부족: 제한 횟수 안에서 재계획, 이후 미확인 기록
+  → generate_report → validate_report
+      ├─ 통과: save_report
+      └─ 미달: 제한 횟수 안에서 재생성 후 상태를 명시해 저장
+```
+
+노트북의 `subtasks → Send → results reducer → synthesizer` 예제를 투자 평가 도메인에 적용했습니다. 교안의 Layered State 예제에 따라 Orchestrator의 제어 상태와 Worker별 결과를 구분하고, Worker에는 기업과 담당 작업만 전달합니다. 병렬 완료 순서는 일정하지 않으므로 Synthesis에서 `task_id`와 출처 기준으로 정렬합니다.
+
+| 교안 코드의 역할 | 이 프로젝트에서 바뀐 코드 |
+|---|---|
+| `Plan.subtasks: list[str]` | `ResearchPlan.tasks: list[ResearchTask]`로 영역·목표·검색 질의·성공 기준을 구조화 |
+| `assign_workers`가 `Send` 목록 반환 | `assign_research_workers`가 계획의 작업 수에 맞춰 `ResearchWorkerState`를 전달 |
+| `results: Annotated[..., operator.add]` | `research_results` 전용 reducer로 병렬 결과를 병합하고 기업 전환 시 초기화 |
+| Worker의 단일 결과 문자열 | `ResearchResult`에 근거, 상태, 오류, 시도 횟수, 소요 시간을 저장 |
+| `synthesizer`가 결과 통합 | `synthesize_research`가 근거를 정렬·취합하고 실패/빈 결과/누락 영역을 계산 |
+| 예제의 한 번 실행 | 근거 부족 시 최대 2회 재계획, 보고서 미달 시 최대 2회 평가 루프, SQLite 체크포인트로 중단 후 재개 |
+
+### 현재 구현의 경계
+
+- Worker의 `FAILED` 결과는 실행을 중단시키지 않으며 SQLite 체크포인트로 그래프 상태를 복원할 수 있습니다. 개별 API 호출의 강제 타임아웃은 아직 없습니다. `max_concurrency=3`으로 한 번에 실행되는 작업 수를 제한합니다.
+- `score_common`의 영역별 점수는 아직 예시 값입니다. 근거 충족률은 실제 검증 결과에서 계산하지만, 예시 점수를 실투자 판단에 사용하면 안 됩니다.
+- 보고서 품질 검사는 결정적 규칙 기반입니다. 문장별 사실성 판단을 수행하는 LLM Judge는 포함하지 않았습니다. 출처가 부족하면 재생성만으로 해결할 수 없으므로 품질 미통과 상태가 최종 결과에 남습니다.
+- 품질 평가를 통과한 실행에서만 새 PDF를 생성합니다. `output/report.pdf`가 이전 실행에서 남아 있을 수 있으므로, 현재 실행 상태와 생성 시각을 확인해야 합니다.
+- `source_id`는 원본 파일과 페이지/청크에 연결됩니다. 기존 FAISS 인덱스를 사용하는 경우에는 옛 메타데이터가 남을 수 있으므로 `ingest_documents()`로 재색인해야 합니다.
+
+과제 제출물인 GitHub branch/link, LangSmith trace 이미지, 평가 보고서 PDF와 ZIP 파일은 코드 변경만으로 생성되지 않습니다. 실제 실행과 추적 캡처 후 별도로 준비해야 합니다.
+
+실행: `uv run python main.py`. 중단 후 재개: 터미널에 출력된 ID를 사용하여 `uv run python main.py --resume RUN_ID`. 체크포인트는 `.cache/checkpoints.sqlite`에 저장되며 Git에는 포함하지 않습니다.
 
 ---
+
+## 기존 설계안 참고
+
+아래 절은 최초 투자평가 설계안과 예시를 보존한 자료입니다. 실행 중인 그래프와 과제 필수사항의 현재 상태는 위의 **과제 요구사항 명세 및 구현 대응**과 실제 `src/` 코드를 기준으로 확인하세요. 예시 점수, 임베딩 후보, 29·45문항 계획, 재검색·보고서 검증 예시는 현재 구현 결과를 뜻하지 않습니다.
 
 ## 목차
 
@@ -41,12 +117,12 @@ LangGraph 기반 다중 에이전트(Multi-Agent)와 Agentic RAG를 활용하여
 
 ## 2. 시스템 설계 원칙
 
-시스템은 **공통 근거를 만드는 Evidence RAG Subgraph**와, 동일한 근거를 바탕으로 각기 다른 가중치와 투자 철학으로 해석하는 **5개의 Profile Agent**로 구성됩니다.
+시스템은 조사 계획을 동적으로 분해하는 **Orchestrator**, 각 작업을 병렬 검색하는 **Research Workers**, 결과를 취합하는 **Research Synthesizer**, 동일한 근거를 서로 다른 투자 철학으로 해석하는 **5개의 Profile Agent**로 구성됩니다.
 
 | 단계 | 동작 | 산출물 |
 |---|---|---|
 | 1. 고정 입력 | ACCURE·volytica·Electra와 선별 문서 로드 | `current_company` · `source metadata` |
-| 2. Evidence RAG | 29개 항목 질문화 → 검색 → 근거 검증 → 재검색 | `validated_evidence` · `unknown_items` |
+| 2. Orchestrator–Workers RAG | 3~5개 독립 조사 작업 생성 → Worker 병렬 검색 → 결과 취합·검증 | `research_tasks` · `research_results` · `validated_evidence` |
 | 3. 공통 평가 | 동일 평가표로 영역점수와 근거 충족률 계산 | `domain_scores` · `evidence_coverage` |
 | 4. Profile Agent | 5개 성향이 서로 다른 가중치로 병렬 판단 | 5개 `AgentResult` |
 | 5. 종합 | 평균·편차·합의·소수의견·추가실사 결합 | `FinalInvestmentIndex` |
@@ -206,99 +282,57 @@ EvidenceCoverage     = 확인된 세부항목 수 / 전체 세부항목 수 × 1
 
 ## 6. Graph 전체 흐름
 
-```
-                              ┌─────────────────────────────────┐
-                              │          [START]                │
-                              └────────────┬────────────────────┘
-                                           ▼
-                              ┌─────────────────────────────────┐
-                              │  고정 기업 3곳 + 문서 코퍼스 로드  │
-                              └────────────┬────────────────────┘
-                                           ▼
-                     ┌─────── │  현재 기업 선택 (1/3)             │ ◄──────────┐
-                     │        └────────────┬────────────────────┘            │
-                     │                     ▼                                 │
-                     │        ┌─────────────────────────────────┐            │
-                     │        │  29개 항목 평가 질문 생성         │            │
-                     │        └────────────┬────────────────────┘            │
-                     │                     ▼                                 │
-                     │   ┌──► ┌─────────────────────────────────┐            │
-                     │   │    │  Evidence RAG 검색 (Top-K=5)     │            │
-                     │   │    └────────────┬────────────────────┘            │
-                     │   │                 ▼                                 │
-                     │   │    ┌─────────────────────────────────┐            │
-                     │   │    │  관련성 · 출처등급 · 상충 검증    │            │
-                     │   │    └──┬──────────┬───────────────┬───┘            │
-                     │   │       │          │               │                │
-                     │   │   충분 ▼     부족(< 2회)     2회 도달             │
-                     │   │       │          │               │                │
-                     │   │       │    ┌─────┴─────┐   ┌─────┴─────┐          │
-                     │   │       │    │  Query     │   │  미확인   │          │
-                     │   │       │    │  Rewrite   │   │  항목기록 │          │
-                     │   │       │    └─────┬─────┘   └─────┬─────┘          │
-                     │   │       │          │               │                │
-                     │   └───────┘──────────┘               │                │
-                     │                     ┌────────────────┘                │
-                     │                     ▼                                 │
-                     │        ┌─────────────────────────────────┐            │
-                     │        │  공통 5개 영역 점수 계산          │            │
-                     │        │  + 근거 충족률(Coverage) 산출     │            │
-                     │        └────────────┬────────────────────┘            │
-                     │                     ▼                                 │
-                     │        ┌─────────────────────────────────────────┐    │
-                     │        │  5개 Profile Agent 병렬 실행 (Send API) │    │
-                     │        │                                         │    │
-                     │        │  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐
-                     │        │  │기술형│ │안정형│ │성장형│ │균형형│ │사업형│
-                     │        │  │손연우│ │강도희│ │김대훈│ │이연주│ │정수민│
-                     │        │  └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘ └──┬───┘
-                     │        └─────┼────────┼────────┼────────┼────────┼────┘
-                     │              └────────┴────────┼────────┴────────┘
-                     │                                ▼
-                     │        ┌─────────────────────────────────┐
-                     │        │  Agent 결과 종합 · 최종 투자지표  │
-                     │        └────────────┬────────────────────┘
-                     │                     ▼
-                     │        ┌─────────────────────────────────┐
-                     │        │  기업 결과 저장                  │
-                     │        └────────────┬────────────────────┘
-                     │                     ▼
-                     │              ┌──────┴──────┐
-                     │              │ 남은 기업?   │
-                     │              └──┬───────┬──┘
-                     │            예   │       │  아니오
-                     └─────────────────┘       ▼
-                              ┌─────────────────────────────────┐
-                              │  3개 기업 비교                   │
-                              └────────────┬────────────────────┘
-                                           ▼
-                     ┌──────► ┌─────────────────────────────────┐
-                     │        │  투자보고서 생성 (5쪽 이내)       │
-                     │        └────────────┬────────────────────┘
-                     │                     ▼
-                     │        ┌─────────────────────────────────┐
-                     │  오류  │  인용 · 수치 · REFERENCE 검증    │
-                     └────────┤                                 │
-                              └────────────┬────────────────────┘
-                                      통과 │
-                                           ▼
-                              ┌─────────────────────────────────┐
-                              │          [END]                  │
-                              └─────────────────────────────────┘
+```mermaid
+flowchart TD
+    START([시작]) --> LOAD["입력 로드<br/>기업·문서 코퍼스"]
+    LOAD --> SELECT["현재 기업 선택"]
+    SELECT --> PLAN["Orchestrator<br/>조사 작업 3~5개 설계"]
+    PLAN --> CHECK["계획 검증<br/>미흡하면 기준 계획 적용"]
+    CHECK --> WORKERS[["Research Workers<br/>작업별 병렬 검색"]]
+    WORKERS --> MERGE["조사 결과 취합"]
+    MERGE --> EVIDENCE{"근거 충분?"}
+    EVIDENCE -- "부족 · 재시도 가능" --> REWRITE["검색 질의 재계획"]
+    REWRITE --> PLAN
+    EVIDENCE -- "부족 · 한도 도달" --> UNKNOWN["미확인 항목 기록"]
+    EVIDENCE -- "충분" --> SCORE["공통 점수·근거 충족률"]
+    UNKNOWN --> SCORE
+    SCORE --> PROFILES[["5개 Profile Agent<br/>병렬 평가"]]
+    PROFILES --> SYNTH["기업별 평가 종합"]
+    SYNTH --> SAVE_COMPANY["기업 결과 저장"]
+    SAVE_COMPANY --> NEXT{"남은 기업?"}
+    NEXT -- "예" --> SELECT
+    NEXT -- "아니오" --> COMPARE["기업 간 비교"]
+    COMPARE --> REPORT["보고서 생성"]
+    REPORT --> REVIEW{"보고서 품질 통과?"}
+    REVIEW -- "미달 · 재시도 가능" --> REPORT
+    REVIEW -- "통과 또는 한도 도달" --> SAVE_REPORT["검증 상태 표시·보고서 저장"]
+    SAVE_REPORT --> END([종료])
+
+    classDef terminal fill:#183153,color:#fff,stroke:#183153,stroke-width:2px
+    classDef control fill:#e8f1ff,color:#173b75,stroke:#6b9bd2
+    classDef parallel fill:#e8f7ee,color:#17613a,stroke:#58ad7b,stroke-width:2px
+    classDef decision fill:#fff3dc,color:#75500d,stroke:#d7a646
+    classDef output fill:#f1eafd,color:#543783,stroke:#a783ce
+    class START,END terminal
+    class PLAN,CHECK,REWRITE,SELECT,NEXT control
+    class WORKERS,PROFILES parallel
+    class EVIDENCE,REVIEW decision
+    class COMPARE,REPORT,SAVE_REPORT output
 ```
 
 **흐름을 한 줄로 요약하면:**
 
-> 기업 로드 → 질문 생성 → RAG 검색(최대 2회 재시도) → 공통 점수 → 5명 병렬 평가 → 종합 → *기업 수만큼 반복* → 비교표 → 보고서 생성(검증 통과까지 재시도) → 끝
+> 기업 로드 → 계획·검증 → 병렬 조사 → 근거 검증·필요 시 재조사 → 공통 점수 → 5명 병렬 평가 → *기업 수만큼 반복* → 비교·보고서 검증 → 저장
 
 | 구조 | 설계 내용 | 종료·통제 |
 |---|---|---|
-| Workflow | 고정입력→질문→검색→검증→점수→5 Agent→종합→기업반복→보고서 | 모든 기업 처리 후 보고서 단계 |
-| Retrieval Loop | 근거 부족이면 Query Rewrite 후 retrieve로 복귀 | 질문별 최대 2회 |
+| Research Fan-out | Orchestrator가 3~5개 독립 작업을 만들고 `Send`로 Worker 실행 | Reducer가 모든 Worker 결과를 수신 |
+| Workflow | 고정입력→계획→병렬검색→취합→검증→점수→5 Agent→종합→기업반복→보고서 | 모든 기업 처리 후 보고서 단계 |
+| Retrieval Loop | 근거 부족이면 Query Rewrite 후 Orchestrator로 복귀 | 재계획 후 다시 병렬 조사 |
 | Unknown Branch | 재검색 한도 도달 시 미확인으로 기록하고 계속 | 환각·임의 점수 금지 |
 | Profile Fan-out | 동일 `domain_scores`·`validated_evidence`를 5개 Agent에 Send | Reducer가 5개 결과를 모두 수신 |
 | Company Loop | `company_result` 저장 후 `current_index` 증가 | 3개 완료 시 `compare_companies` |
-| Report Loop | 인용 누락·수치 불일치·REFERENCE 오류면 보고서 재생성 | 오류 0이면 END |
+| Report Loop | 품질 미달 시 한도 내에서 보고서 재생성 | 통과하거나 재시도 한도에 도달하면 검증 상태를 표시하고 저장 |
 
 ---
 
@@ -309,7 +343,9 @@ class InvestmentAgentState(TypedDict):
     selected_companies: List[Company]          # 사전 선정 완료된 3개 기업
     current_index: int                         # 현재 기업 위치
     current_company: Optional[Company]         # 현재 분석 기업
-    evaluation_questions: List[Question]       # 29개 항목 기반 평가 질문
+    evaluation_questions: List[Question]       # Orchestrator 계획과 호환되는 평가 질문
+    research_tasks: List[ResearchTask]         # 런타임에 동적으로 생성된 조사 작업
+    research_results: Annotated[List, add]     # 병렬 Worker 결과 (Reducer)
     retrieved_evidence: List[Evidence]         # Top-K 검색 결과
     validated_evidence: List[Evidence]         # 근거검증 통과 결과
     evidence_coverage: float                   # 질문·항목 근거 충족률
@@ -326,7 +362,7 @@ class InvestmentAgentState(TypedDict):
 
 > **State 설계 원칙**
 > - 노드는 State 전체가 아니라 자신이 담당한 key만 부분 업데이트한다.
-> - `profile_results`와 `company_results`는 **Reducer**를 사용해 병렬·반복 결과를 누적한다.
+> - `research_results`, `profile_results`, `company_results`는 **Reducer**를 사용해 병렬·반복 결과를 누적한다.
 > - 질문별 `retry_count`로 재검색 상한을 제어하고 2회 후에는 unknown으로 종료한다.
 
 ---
@@ -417,23 +453,26 @@ LangGraph는 LangChain 위에 구축된 **상태 머신(State Machine) 프레임
 # src/graph.py 에서 발췌
 
 from langgraph.graph import StateGraph, END
-from langgraph.constants import Send
+from langgraph.types import Send
 
 workflow = StateGraph(InvestmentAgentState)   # TypedDict 기반 상태 정의
 
 # ── 노드 등록 (각 노드는 State → dict 를 반환하는 순수 함수) ──
 workflow.add_node("load_inputs", load_inputs)
-workflow.add_node("build_questions", build_questions)
-workflow.add_node("retrieve_evidence", retrieve_evidence)
+workflow.add_node("orchestrator", orchestrate_research)
+workflow.add_node("research_worker", research_worker)
+workflow.add_node("synthesize_research", synthesize_research)
 workflow.add_node("score_common", score_common)
 workflow.add_node("profile_agent", profile_agent_node)
 workflow.add_node("synthesize_company", synthesize_company)
-# ... (총 14개 노드)
+# ... (총 15개 노드)
 
 # ── 직선 엣지: A 끝나면 B로 ──
 workflow.add_edge("load_inputs", "select_company")
-workflow.add_edge("select_company", "build_questions")
-workflow.add_edge("build_questions", "retrieve_evidence")
+workflow.add_edge("select_company", "orchestrator")
+workflow.add_conditional_edges("orchestrator", assign_research_workers, ["research_worker"])
+workflow.add_edge("research_worker", "synthesize_research")
+workflow.add_edge("synthesize_research", "validate_evidence")
 ```
 
 #### 조건부 분기 (Conditional Edge)
@@ -462,15 +501,24 @@ workflow.add_conditional_edges(
 )
 
 # 재검색 루프: rewrite → retrieve → validate → (다시 판단)
-workflow.add_edge("rewrite_query", "retrieve_evidence")
+workflow.add_edge("rewrite_query", "orchestrator")
 ```
 
 #### 병렬 실행 — `Send` API (Fan-out)
 
-5개의 Profile Agent를 **동시에** 실행하기 위해 LangGraph의 `Send` API를 사용합니다.
+Research Worker와 5개의 Profile Agent를 **동시에** 실행하기 위해 LangGraph의 `Send` API를 사용합니다. 첫 번째 fan-out은 Orchestrator가 런타임에 만든 작업 수에 따라 크기가 달라집니다.
 
 ```python
-from langgraph.constants import Send
+from langgraph.types import Send
+
+def assign_research_workers(state):
+    return [
+        Send("research_worker", {
+            "current_company": state["current_company"],
+            "research_task": task,
+        })
+        for task in state["research_tasks"]
+    ]
 
 def route_to_profiles(state):
     """공통 점수 계산 후, 5개 에이전트에 동일한 데이터를 동시에 전송"""
@@ -566,11 +614,13 @@ for event in graph.stream(initial_state):
 ## 10. 설치 및 실행 방법
 
 ### Step 1. 환경 변수 설정
-프로젝트 루트에 `.env` 파일을 생성하고 API 키를 입력합니다.
+프로젝트 루트의 `.env_example`을 `.env`로 복사하고 실제 API 키를 입력합니다. `.env`는 Git에 올리지 않습니다.
 ```env
-OPENAI_API_KEY=sk-...
+OPENAI_API_KEY=your-openai-api-key
+TAVILY_API_KEY=your-tavily-api-key
 LANGCHAIN_TRACING_V2=true
 LANGCHAIN_PROJECT=SKALA
+LANGSMITH_API_KEY=your-langsmith-api-key
 ```
 
 ### Step 2. 실행
@@ -616,8 +666,9 @@ uv run python main.py
  ➔ 📂 분석 타겟: ACCURE
 
 🎯 타겟 기업 설정됨: ACCURE
- ➔ ✨ Sub-Agent 작업 완료: build_questions
- ➔ ✨ Sub-Agent 작업 완료: retrieve_evidence
+ ➔ 🧩 Orchestrator가 조사 작업 5개를 생성
+ ➔ 🔎 Research Worker 조사 완료
+ ➔ 🧬 병렬 조사 결과 통합: 근거 25건
  ➔ ✨ Sub-Agent 작업 완료: score_common
  ➔ 👥 5대 프로필 에이전트 병렬(Parallel) 분석 완료
  ➔ 👥 5대 프로필 에이전트 병렬(Parallel) 분석 완료

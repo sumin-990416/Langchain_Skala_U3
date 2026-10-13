@@ -62,10 +62,15 @@ def ingest_documents():
     )
     
     split_docs = text_splitter.split_documents(docs)
+    for index, doc in enumerate(split_docs):
+        source_name = Path(doc.metadata.get("source", "unknown")).name
+        page = doc.metadata.get("page", 0)
+        doc.metadata["source_document"] = source_name
+        doc.metadata["source_id"] = f"{source_name}:p{page + 1}:c{index}"
     print(f"✂️ 청킹 완료: 총 {len(split_docs)} 개의 청크 생성 (크기: 500, 오버랩: 50)")
 
     # 3. FAISS 벡터 DB 저장
-    print("🧠 OpenAI 임베딩 및 FAISS DB 생성 중...")
+    print("🧠 다국어 E5 임베딩 및 FAISS DB 생성 중...")
     embeddings = get_embeddings()
     db = FAISS.from_documents(split_docs, embeddings)
     

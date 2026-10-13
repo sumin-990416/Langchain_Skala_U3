@@ -159,35 +159,35 @@
     <div class="summary-section">
         <div class="summary-text">
             <h2>SUMMARY</h2>
-            <p>{{ best_company.company_name }}가 최종 투자지표 {{ best_company.average_score }}점으로 1위다. {{ best_company.summary_reason }}</p>
+            <p>기업별 근거 충족률과 투자 관점 차이를 비교합니다. 점수는 기술 우열이나 투자 결정을 자동으로 확정하지 않습니다.</p>
         </div>
         <div class="summary-box">
-            <h3>최종 투자검토</h3>
-            <h2>{{ best_company.final_decision }}</h2>
-            <p>{{ best_company.company_name }} | {{ best_company.average_score }}점</p>
+            <h3>분석 기업 수</h3>
+            <h2>{{ companies|length }}개사</h2>
+            <p>근거 및 미확인 항목 확인 필요</p>
         </div>
     </div>
     
     <div class="kpi-row">
         <div class="kpi-card">
-            <h4>최종 투자지표</h4>
-            <div class="value">{{ best_company.average_score }}</div>
-            <div class="sub">3개사 중 1위</div>
+            <h4>분석 기업</h4>
+            <div class="value">{{ companies|length }}</div>
+            <div class="sub">개별 실사 대상</div>
         </div>
         <div class="kpi-card">
             <h4>근거충족률</h4>
-            <div class="value">{{ best_company.evidence_coverage }}%</div>
+            <div class="value">{{ focus_company.evidence_coverage }}%</div>
             <div class="sub">문서 기반 검증</div>
         </div>
         <div class="kpi-card">
             <h4>관점 편차</h4>
-            <div class="value">{{ best_company.score_std_dev }}</div>
+            <div class="value">{{ focus_company.score_std_dev }}</div>
             <div class="sub">Profile 간 차이</div>
         </div>
         <div class="kpi-card">
             <h4>우선 실사</h4>
-            <div class="value">5개</div>
-            <div class="sub">성능·매출·책임</div>
+            <div class="value">{{ companies|length }}개사</div>
+            <div class="sub">미확인 항목 확인</div>
         </div>
     </div>
     
@@ -230,6 +230,16 @@
             {% endfor %}
         </tbody>
     </table>
+
+    <h3>확인된 출처와 자료 한계</h3>
+    {% for c in companies %}
+    <p><strong>{{ c.company_name }}</strong>:
+       {% if c.evidence_sources %}
+           {% for source in c.evidence_sources %}[{{ source }}] {% endfor %}
+       {% else %}검증 가능한 근거 없음{% endif %}
+       {% if c.source_documents|length < 2 %} — 독립 원본 문서가 2개 미만이므로 추가 확인 필요{% endif %}
+    </p>
+    {% endfor %}
     
     <div class="footer">
         SKALA 4기 · 울산 3반 · 4조
