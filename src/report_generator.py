@@ -160,8 +160,14 @@ def _write_charts(company_rows: list[Dict[str, Any]], images_dir: Path) -> tuple
     return bar_chart_path, donut_chart_path
 
 
-def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str] = None) -> str:
-    """판단 유보·부분 근거 부족·Agent 오류를 포함해 항상 5쪽 보고서를 생성합니다."""
+def generate_pdf_report(
+    comparison_result: Any,
+    output_path: Optional[Path | str] = None,
+    *,
+    quality_evaluation: Optional[Dict[str, Any]] = None,
+    evidence_by_company: Optional[Dict[str, list[Any]]] = None,
+) -> str:
+    """기존 보고서 구조에 근거 추적과 품질 평가를 포함해 PDF를 생성합니다."""
     # WeasyPrint의 시스템 의존성이 없더라도 다른 모듈과 Markdown 생성은
     # 계속되도록 실제 PDF 생성 시점에만 불러옵니다.
     try:
@@ -205,12 +211,45 @@ def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str
 
     profiles_dict: Dict[str, list[Dict[str, str]]] = {}
     source_ids = []
+    evidence_quotes = []
     for company in company_rows:
         for profile in company["profiles"]:
             profiles_dict.setdefault(profile["name"], []).append({
                 "company": company["name"], **profile
             })
         source_ids.extend(company["source_ids"])
+
+    evidence_by_company = evidence_by_company or {}
+    for company in comparison_result.companies:
+        evidence_lookup = {
+            item.source_id: item
+            for item in evidence_by_company.get(company.company_name, [])
+            if item.source_id
+        }
+        company_quote_count = 0
+        for profile in company.profile_results:
+            for stance, citation_ids in (
+                ("찬성", profile.supporting_evidence_ids),
+                ("반대·상충", profile.contrary_evidence_ids),
+            ):
+                for source_id in citation_ids:
+                    evidence = evidence_lookup.get(source_id)
+                    if not evidence or not evidence.content.strip():
+                        continue
+                    evidence_quotes.append({
+                        "company": company.company_name,
+                        "profile": profile.profile_name,
+                        "stance": stance,
+                        "source_id": source_id,
+                        "content": _truncate(evidence.content, 220),
+                    })
+                    company_quote_count += 1
+                    if company_quote_count >= 4:
+                        break
+                if company_quote_count >= 4:
+                    break
+            if company_quote_count >= 4:
+                break
 
     raw_dir = base_dir / "data" / "raw"
     input_documents = sorted(path.name for path in raw_dir.iterdir() if path.is_file()) if raw_dir.exists() else []
@@ -232,9 +271,12 @@ def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str
         profiles_dict=profiles_dict,
         category_counts=category_counts,
         source_ids=_unique(source_ids)[:32],
+        evidence_quotes=evidence_quotes,
         input_documents=input_documents,
         bar_chart_path=bar_chart_path.resolve().as_uri(),
         donut_chart_path=donut_chart_path.resolve().as_uri(),
+        quality_evaluation=quality_evaluation,
+        page_total=7 if quality_evaluation is not None else 6,
     )
     HTML(string=html_content, base_url=str(base_dir)).write_pdf(pdf_path)
     return str(pdf_path)

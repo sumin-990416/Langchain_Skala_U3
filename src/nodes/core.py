@@ -193,12 +193,66 @@ def synthesize_company(state: InvestmentAgentState) -> dict:
 def save_company_result(state: InvestmentAgentState) -> dict:
     idx = state.get("current_index", 0)
     res = state.get("company_result")
+    company_name = res.company_name if res else ""
+    bounded = []
+    seen = set()
+    for evidence in state.get("validated_evidence", []):
+        key = (evidence.source_id, evidence.item_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        bounded.append(evidence.model_copy(update={"content": evidence.content[:900]}))
     # company_results (Annotated reducer)에 누적
-    return {"company_results": [res], "current_index": idx + 1, "profile_results": []} # 리스트 클리어 트릭 필요하지만 지금은 reducer가 처리
+    return {
+        "company_results": [res],
+        "current_index": idx + 1,
+        "profile_results": [],
+        "evidence_by_company": {company_name: bounded[-160:]} if company_name else {},
+    } # 리스트 클리어 트릭 필요하지만 지금은 reducer가 처리
 
 def _format_score(score: float | None, suffix: str = "") -> str:
     """미산출은 숫자나 0점 대신 명시적인 문구로 표시한다."""
     return "점수 없음" if score is None else f"{score:.1f}{suffix}"
+
+
+def _canonicalize_comparison_sources(comparison: ComparisonResult, evidence_map: dict) -> ComparisonResult:
+    """Normalize model-returned citation aliases to exact IDs in the evidence ledger."""
+    companies = []
+    for company in comparison.companies:
+        known = {
+            re.sub(r"[^a-z0-9]", "", item.source_id.lower()): item.source_id
+            for item in evidence_map.get(company.company_name, [])
+            if item.source_id
+        }
+
+        def resolve(ids: list[str]) -> list[str]:
+            resolved = []
+            for citation in ids:
+                key = re.sub(r"[^a-z0-9]", "", citation.lower())
+                source_id = known.get(key)
+                if source_id and source_id not in resolved:
+                    resolved.append(source_id)
+            return resolved
+
+        profiles = []
+        for profile in company.profile_results:
+            original_ids = profile.supporting_evidence_ids + profile.contrary_evidence_ids
+            supporting = resolve(profile.supporting_evidence_ids)
+            contrary = resolve(profile.contrary_evidence_ids)
+            unresolved = sorted({
+                citation for citation in original_ids
+                if re.sub(r"[^a-z0-9]", "", citation.lower()) not in known
+            })
+            unknown_items = list(profile.unknown_items)
+            if unresolved:
+                unknown_items.append("저장된 근거와 연결되지 않는 인용 ID 제외: " + ", ".join(unresolved))
+            profiles.append(profile.model_copy(update={
+                "supporting_evidence_ids": supporting,
+                "contrary_evidence_ids": contrary,
+                "unknown_items": unknown_items,
+            }))
+        companies.append(company.model_copy(update={"profile_results": profiles}))
+    return comparison.model_copy(update={"companies": companies})
 
 
 def _has_partial_scores(company: CompanyResult) -> bool:
@@ -237,6 +291,9 @@ def generate_report(state: InvestmentAgentState) -> dict:
     if not comp:
         return {"report_draft": "", "report_errors": ["종합 비교 결과가 없습니다."]}
 
+    comp = _canonicalize_comparison_sources(comp, state.get("evidence_by_company", {}))
+    evidence_by_company = state.get("evidence_by_company", {})
+
     report = f"""# Battery Intelligence 스타트업 투자검토 보고서
 
 ## SUMMARY
@@ -257,6 +314,11 @@ def generate_report(state: InvestmentAgentState) -> dict:
         report += f"- **종합 의견**: {company.summary_reason}\n"
 
         report += "\n#### Profile Agent 결과\n"
+        evidence_lookup = {
+            item.source_id: item
+            for item in evidence_by_company.get(company.company_name, [])
+            if item.source_id
+        }
         for profile in company.profile_results:
             score = _format_score(profile.weighted_score, "점")
             decision = profile.decision.value if profile.decision else "판정 미확인"
@@ -272,6 +334,21 @@ def generate_report(state: InvestmentAgentState) -> dict:
                 report += "  - 근거 부족: " + "; ".join(profile.unknown_items) + "\n"
             if profile.error_message:
                 report += f"  - 평가 오류: {profile.error_message}\n"
+            if profile.supporting_evidence_ids:
+                ids = ", ".join(f"[{source_id}]" for source_id in profile.supporting_evidence_ids)
+                report += f"  - 찬성 근거: {ids}\n"
+            if profile.contrary_evidence_ids:
+                ids = ", ".join(f"[{source_id}]" for source_id in profile.contrary_evidence_ids)
+                report += f"  - 반대·상충 근거: {ids}\n"
+            for stance, citation_ids in (
+                ("찬성", profile.supporting_evidence_ids[:2]),
+                ("반대·상충", profile.contrary_evidence_ids[:2]),
+            ):
+                for source_id in citation_ids:
+                    evidence = evidence_lookup.get(source_id)
+                    if evidence and evidence.content.strip():
+                        excerpt = " ".join(evidence.content.split())[:240]
+                        report += f"  - {stance} 원문 발췌 [{source_id}]: “{excerpt}”\n"
             if profile.due_diligence_questions:
                 report += "  - 추가 실사: " + "; ".join(profile.due_diligence_questions) + "\n"
             source_ids.extend(profile.supporting_evidence_ids)
@@ -293,7 +370,7 @@ def generate_report(state: InvestmentAgentState) -> dict:
     errors = []
     try:
         from src.report_generator import generate_pdf_report
-        pdf_path = generate_pdf_report(comp)
+        pdf_path = generate_pdf_report(comp, evidence_by_company=evidence_by_company)
         if pdf_path:
             print(f"🎉 고품질 PDF 보고서가 생성되었습니다: {pdf_path}")
     except Exception as e:
@@ -301,7 +378,7 @@ def generate_report(state: InvestmentAgentState) -> dict:
         errors.append(error_message)
         print(error_message)
 
-    return {"report_draft": report, "report_errors": errors}
+    return {"report_draft": report, "report_errors": errors, "final_comparison": comp}
 
 def validate_report(state: InvestmentAgentState) -> dict:
     """산출물 누락을 기록하되 그래프가 무한 재생성 루프에 빠지지 않게 합니다."""

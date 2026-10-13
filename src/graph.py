@@ -18,7 +18,18 @@ from src.nodes.core import (
     generate_report,
     validate_report
 )
-from src.agents.profile import profile_agent_node, get_all_profiles
+from src.agents.orchestrator import (
+    apply_followup_results,
+    evaluate_report_quality,
+    finalize_report,
+    followup_worker,
+    plan_followup_tasks,
+    plan_profile_tasks,
+    profile_worker,
+    route_after_quality,
+    route_followup_workers,
+    route_profile_workers,
+)
 
 def route_evidence_check(state: InvestmentAgentState) -> Literal["score_common", "rewrite_query", "record_unknown"]:
     """
@@ -35,18 +46,6 @@ def route_evidence_check(state: InvestmentAgentState) -> Literal["score_common",
             return "rewrite_query"
         else:
             return "record_unknown"
-
-def route_to_profiles(state: InvestmentAgentState):
-    """공통 점수 후 5개 프로필 에이전트를 병렬 실행합니다."""
-    return [
-        Send("profile_agent", {
-            "profile_name": p,
-            "domain_scores": state.get("domain_scores", {}),
-            "validated_evidence": state.get("validated_evidence", []),
-            "current_company": state.get("current_company")
-        })
-        for p in get_all_profiles()
-    ]
 
 def route_next_company(state: InvestmentAgentState) -> Literal["select_company", "compare_companies"]:
     """남은 기업이 있는지 확인합니다."""
@@ -73,12 +72,18 @@ def build_graph() -> StateGraph:
     workflow.add_node("rewrite_query", rewrite_query)
     workflow.add_node("record_unknown", record_unknown)
     workflow.add_node("score_common", score_common)
-    workflow.add_node("profile_agent", profile_agent_node)
+    workflow.add_node("plan_profile_tasks", plan_profile_tasks)
+    workflow.add_node("profile_worker", profile_worker)
     workflow.add_node("synthesize_company", synthesize_company)
     workflow.add_node("save_company_result", save_company_result)
     workflow.add_node("compare_companies", compare_companies)
     workflow.add_node("generate_report", generate_report)
     workflow.add_node("validate_report", validate_report)
+    workflow.add_node("evaluate_report_quality", evaluate_report_quality)
+    workflow.add_node("plan_followup_tasks", plan_followup_tasks)
+    workflow.add_node("followup_worker", followup_worker)
+    workflow.add_node("apply_followup_results", apply_followup_results)
+    workflow.add_node("finalize_report", finalize_report)
 
     # 2. 엣지 연결
     workflow.set_entry_point("load_inputs")
@@ -101,9 +106,10 @@ def build_graph() -> StateGraph:
     workflow.add_edge("rewrite_query", "retrieve_evidence")
     workflow.add_edge("record_unknown", "score_common")
 
-    # 병렬 에이전트 실행
-    workflow.add_conditional_edges("score_common", route_to_profiles, ["profile_agent"])
-    workflow.add_edge("profile_agent", "synthesize_company")
+    # Structured planning precedes runtime Send fan-out. Worker count comes from State.
+    workflow.add_edge("score_common", "plan_profile_tasks")
+    workflow.add_conditional_edges("plan_profile_tasks", route_profile_workers, ["profile_worker"])
+    workflow.add_edge("profile_worker", "synthesize_company")
     
     workflow.add_edge("synthesize_company", "save_company_result")
 
@@ -118,7 +124,21 @@ def build_graph() -> StateGraph:
     )
 
     workflow.add_edge("compare_companies", "generate_report")
-    workflow.add_edge("generate_report", "validate_report")
+    workflow.add_edge("generate_report", "evaluate_report_quality")
+
+    workflow.add_conditional_edges(
+        "evaluate_report_quality",
+        route_after_quality,
+        {"follow_up": "plan_followup_tasks", "finish": "finalize_report"},
+    )
+    workflow.add_conditional_edges(
+        "plan_followup_tasks",
+        route_followup_workers,
+        ["followup_worker"],
+    )
+    workflow.add_edge("followup_worker", "apply_followup_results")
+    workflow.add_edge("apply_followup_results", "compare_companies")
+    workflow.add_edge("finalize_report", "validate_report")
 
     # 조건부 엣지: 보고서 검증 오류?
     workflow.add_conditional_edges(

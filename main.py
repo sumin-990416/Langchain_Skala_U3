@@ -4,6 +4,7 @@ warnings.filterwarnings("ignore")
 import os
 import sys
 import shutil
+import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -40,8 +41,8 @@ def test_environment():
         sys.exit(1)
         
     # 2. LangSmith 체크
-    tracing = os.environ.get("LANGCHAIN_TRACING_V2")
-    project = os.environ.get("LANGCHAIN_PROJECT")
+    tracing = os.environ.get("LANGSMITH_TRACING", os.environ.get("LANGCHAIN_TRACING_V2"))
+    project = os.environ.get("LANGSMITH_PROJECT", os.environ.get("LANGCHAIN_PROJECT"))
     if tracing == "true":
         console.print(f"  [green]✔ LangSmith 트레이싱 활성화 (프로젝트: {project})[/green]")
     else:
@@ -121,6 +122,7 @@ def main():
     
     # 4. Multi-Agent Graph 구동
     console.print("[bold yellow]🤖 4단계: Multi-Agent 투자 심사 진행[/bold yellow]")
+    trace_id = str(uuid.uuid4())
     initial_state = InvestmentAgentState(
         selected_companies=[],
         current_index=0,
@@ -140,7 +142,17 @@ def main():
         used_sources=[],
         report_draft="",
         report_errors=[],
-        errors=[]
+        errors=[],
+        trace_id=trace_id,
+        structured_tasks=[],
+        worker_status={},
+        step_count=0,
+        max_steps=64,
+        evaluation_round=0,
+        max_evaluation_rounds=2,
+        report_quality={},
+        evidence_by_company={},
+        followup_results=[],
     )
     
     final_report_errors = []
@@ -152,7 +164,12 @@ def main():
         
         task_id = progress.add_task("[cyan]에이전트 네트워크 준비 중...", total=None)
         
-        for event in graph.stream(initial_state):
+        run_config = {
+            "configurable": {"thread_id": trace_id},
+            "metadata": {"trace_id": trace_id, "pattern": "orchestrator-workers"},
+            "recursion_limit": initial_state["max_steps"],
+        }
+        for event in graph.stream(initial_state, config=run_config):
             for node_name, node_state in event.items():
                 if node_name == "load_inputs":
                     companies = node_state.get("selected_companies", [])
@@ -166,9 +183,22 @@ def main():
                         progress.update(task_id, description=f"[bold yellow]심층 분석 진행 중: {c.name}[/bold yellow]")
                         console.print(f"\n🎯 [bold yellow]타겟 기업 설정됨:[/bold yellow] {c.name}")
                         
-                elif node_name == "profile_agent":
-                    console.print(f" ➔ 👥 5대 프로필 에이전트 병렬(Parallel) 분석 완료")
+                elif node_name == "profile_worker":
+                    console.print(" ➔ 👥 계획에 따라 Profile Worker 병렬 분석 완료")
                     progress.update(task_id, description=f"[cyan]다중 관점 평가 종합 중...[/cyan]")
+
+                elif node_name == "plan_profile_tasks":
+                    console.print(f" ➔ 🧭 조사 계획 수립: {len(node_state.get('structured_tasks', []))}개 작업")
+
+                elif node_name == "evaluate_report_quality":
+                    quality = node_state.get("report_quality", {})
+                    console.print(f" ➔ 🧪 보고서 품질 평가: {quality.get('status', 'unknown')} (round {quality.get('round', 0)})")
+
+                elif node_name == "followup_worker":
+                    console.print(" ➔ 🔁 품질 평가 후속 조사 완료")
+
+                elif node_name == "finalize_report":
+                    console.print(f" ➔ 🧾 LangSmith trace_id: {trace_id}")
                     
                 elif node_name == "synthesize_company":
                     res = node_state.get("company_result")

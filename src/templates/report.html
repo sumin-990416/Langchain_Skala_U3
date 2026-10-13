@@ -12,7 +12,7 @@
                 font: 8px "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
             }
             @bottom-right {
-                content: counter(page) " / 5";
+                content: counter(page) " / " counter(pages);
                 color: #7a8798;
                 font: 8px "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
             }
@@ -277,5 +277,37 @@
             <p class="note">점수 없음은 0점이 아니다. 공개자료와 입력 문서만으로 해당 항목의 점수 산출 조건을 충족하지 못했다는 뜻이다. 평가 오류는 연결 또는 구조화 출력 실패를 뜻하며, 해당 Agent 이외의 결과와 보고서 생성은 계속된다.</p>
         </div>
     </section>
+    <section class="page">
+        <div class="header"><h1>근거 원문 발췌</h1><div class="meta">PAGE 6 | 기준일 {{ date }}</div></div>
+        <div class="section">
+            <h2>Profile Agent 인용과 원문 대조</h2>
+            {% if evidence_quotes %}<ol class="reference-list">{% for item in evidence_quotes %}<li><strong>{{ item.company }} · {{ item.profile }} · {{ item.stance }} · [{{ item.source_id }}]</strong><br>{{ item.content }}</li>{% endfor %}</ol>{% else %}<p class="note">보고서에 연결된 원문 발췌가 없습니다.</p>{% endif %}
+        </div>
+    </section>
+    {% if quality_evaluation %}
+    <section class="page">
+        <div class="header"><h1>REPORT QUALITY</h1><div class="meta">PAGE 7 | round {{ quality_evaluation.round }}</div></div>
+        <div class="section">
+            <h2>품질 판정: {{ "통과" if quality_evaluation.passed else "사람 검토 필요" }}</h2>
+            <p class="note">평가 기준은 보고서의 근거 추적성, 중립성, 출처·관점 편중 여부입니다. 자동 판정은 근거 원문을 사람이 확인하는 절차를 대신하지 않습니다.</p>
+        </div>
+        <div class="section">
+            <table class="compact">
+                <thead><tr><th>평가 항목</th><th>판정</th><th>판정 사유</th></tr></thead>
+                <tbody>
+                <tr><td>Groundedness</td><td>{{ "통과" if quality_evaluation.groundedness.passed else "미통과" }}</td><td>{{ quality_evaluation.groundedness.reason }}</td></tr>
+                <tr><td>Neutrality</td><td>{{ "통과" if quality_evaluation.neutrality.passed else "미통과" }}</td><td>{{ quality_evaluation.neutrality.reason }}</td></tr>
+                <tr><td>Bias control</td><td>{{ "통과" if quality_evaluation.bias_control.passed else "미통과" }}</td><td>{{ quality_evaluation.bias_control.reason }}</td></tr>
+                </tbody>
+            </table>
+        </div>
+        <div class="section">
+            <h2>실행 추적과 재시도 제어</h2>
+            <p><b>Trace ID:</b> {{ quality_evaluation.trace_id }}</p>
+            <p><b>평가 라운드:</b> {{ quality_evaluation.round }} / {{ quality_evaluation.max_rounds }}</p>
+            <p class="note">평가 기준을 통과하지 못하면 실패 항목을 바탕으로 후속 조사 작업을 계획합니다. 재시도 상한을 넘기면 결과를 사람 검토 대상으로 표시합니다.</p>
+        </div>
+    </section>
+    {% endif %}
 </body>
 </html>

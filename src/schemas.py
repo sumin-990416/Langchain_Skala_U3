@@ -95,6 +95,54 @@ class ComparisonResult(BaseModel):
     companies: List[CompanyResult] = Field(default_factory=list)
     comparison_table: str = ""
 
+
+def merge_company_results(left: List[CompanyResult], right: List[CompanyResult]) -> List[CompanyResult]:
+    """Append new company results and replace an existing row after follow-up work."""
+    merged = list(left)
+    positions = {item.company_name: index for index, item in enumerate(merged)}
+    for item in right:
+        if item.company_name in positions:
+            merged[positions[item.company_name]] = item
+        else:
+            positions[item.company_name] = len(merged)
+            merged.append(item)
+    return merged
+
+
+def merge_company_evidence(left: Dict[str, List[Evidence]], right: Dict[str, List[Evidence]]) -> Dict[str, List[Evidence]]:
+    """Merge bounded evidence summaries per company, deduplicated by source and rubric item."""
+    merged = {name: list(items) for name, items in left.items()}
+    for company, items in right.items():
+        combined = merged.setdefault(company, [])
+        seen = {(item.source_id, item.item_id) for item in combined}
+        for item in items:
+            key = (item.source_id, item.item_id)
+            if key not in seen:
+                seen.add(key)
+                combined.append(item)
+        # Keep enough of each company's retrieval ledger to verify every source
+        # citation emitted by all Profile Agents (the rubric fanout can exceed 40).
+        merged[company] = combined[-160:]
+    return merged
+
+
+def merge_followup_results(left: List[Dict[str, Any]], right: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep the latest re-evaluation for each company/profile pair."""
+    merged = list(left)
+    positions = {(item["company_name"], item["profile_name"]): i for i, item in enumerate(merged)}
+    for item in right:
+        key = (item["company_name"], item["profile_name"])
+        if key in positions:
+            merged[positions[key]] = item
+        else:
+            positions[key] = len(merged)
+            merged.append(item)
+    return merged
+
+
+def merge_worker_status(left: Dict[str, str], right: Dict[str, str]) -> Dict[str, str]:
+    return {**left, **right}
+
 # --- Graph State ---
 def reset_or_add(left: List[ProfileResult], right: List[ProfileResult]) -> List[ProfileResult]:
     if right == []:
@@ -117,10 +165,21 @@ class InvestmentAgentState(TypedDict):
     domain_scores: Dict[Domain, float]
     profile_results: Annotated[List[ProfileResult], reset_or_add]
     company_result: Optional[CompanyResult]
-    company_results: Annotated[List[CompanyResult], operator.add]
+    company_results: Annotated[List[CompanyResult], merge_company_results]
     
     final_comparison: Optional[ComparisonResult]
     used_sources: List[str]
     report_draft: str
     report_errors: List[str]
     errors: List[str]
+    # Orchestrator-Workers control metadata and bounded payload summaries.
+    trace_id: str
+    structured_tasks: List[Dict[str, Any]]
+    worker_status: Annotated[Dict[str, str], merge_worker_status]
+    step_count: Annotated[int, operator.add]
+    max_steps: int
+    evaluation_round: int
+    max_evaluation_rounds: int
+    report_quality: Dict[str, Any]
+    evidence_by_company: Annotated[Dict[str, List[Evidence]], merge_company_evidence]
+    followup_results: Annotated[List[Dict[str, Any]], merge_followup_results]

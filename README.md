@@ -289,16 +289,15 @@ EvidenceCoverage     = 확인된 세부항목 수 / 전체 세부항목 수 × 1
 
 **흐름을 한 줄로 요약하면:**
 
-> 기업 로드 → 질문 생성 → RAG 검색(최대 2회 재시도) → 공통 점수 → 5명 병렬 평가 → 종합 → *기업 수만큼 반복* → 비교표 → 보고서 생성(검증 통과까지 재시도) → 끝
+> 기업 로드 → 질문 생성 → RAG 검색 → 공통 점수 → State에 구조화 계획 저장 → 계획된 Profile Worker 병렬 실행 → 기업별 종합 → 보고서 생성 → 품질 평가 → 필요하면 후속 검색·재평가(최대 2회) → 최종 보고서
 
 | 구조 | 설계 내용 | 종료·통제 |
 |---|---|---|
-| Workflow | 고정입력→질문→검색→검증→점수→5 Agent→종합→기업반복→보고서 | 모든 기업 처리 후 보고서 단계 |
-| Retrieval Loop | 근거 부족이면 Query Rewrite 후 retrieve로 복귀 | 질문별 최대 2회 |
-| Unknown Branch | 재검색 한도 도달 시 미확인으로 기록하고 계속 | 환각·임의 점수 금지 |
-| Profile Fan-out | 동일 `domain_scores`·`validated_evidence`를 5개 Agent에 Send | Reducer가 5개 결과를 모두 수신 |
-| Company Loop | `company_result` 저장 후 `current_index` 증가 | 3개 완료 시 `compare_companies` |
-| Report Loop | 인용 누락·수치 불일치·REFERENCE 오류면 보고서 재생성 | 오류 0이면 END |
+| Workflow | 기업별 질문·검색·점수 → 구조화된 계획 → 동적 worker → 종합 | 모든 기업 처리 후 보고서 단계 |
+| Profile Fan-out | planner가 State에 기록한 task를 `Send`로 실행 | task별 상태·결과를 reducer가 수집 |
+| Company Loop | `company_result` 저장 후 `current_index` 증가 | 설정된 기업 처리 뒤 비교 |
+| Quality Loop | Judge가 근거성·중립성·편향 통제를 확인하고 후속 조사 | 최대 2회, 미달·Judge 오류는 사람 검토로 표시 |
+| Step Bound | planner·worker·평가 단계의 실행 횟수를 State에서 누적 | `max_steps` 초과 시 추가 조사 중지 |
 
 ---
 
@@ -316,18 +315,38 @@ class InvestmentAgentState(TypedDict):
     retry_count: Dict[str, int]               # 질문별 재검색 횟수
     unknown_items: List[str]                   # 재검색 후 미확인 항목
     domain_scores: Dict[Domain, float]        # 공통 5개 영역 점수
-    profile_results: Annotated[List, add]     # 병렬 5개 Agent 결과 (Reducer)
+    profile_results: Annotated[List, reset_or_add] # 기업 내 병렬 Profile 결과
     company_result: Optional[CompanyResult]    # 현재 기업 종합결과
-    company_results: Annotated[List, add]     # 3개 기업 결과 누적 (Reducer)
+    company_results: Annotated[List, merge_company_results] # 기업 결과 누적·교체
     final_comparison: Optional[ComparisonResult] # 기업 간 비교·최종지표
     report_draft: str                          # 5쪽 보고서 작성용 내용
     report_errors: List[str]                   # 인용·수치·형식 검증 오류
+    trace_id: str                              # 실행 추적 식별자
+    structured_tasks: List[Dict[str, Any]]     # planner가 만든 worker 작업
+    worker_status: Annotated[Dict, merge]      # task별 성공·실패
+    step_count: Annotated[int, operator.add]   # 실행 상한 제어
+    max_steps: int                             # 전체 실행 상한
+    evaluation_round: int                      # 품질 평가 라운드
+    max_evaluation_rounds: int                 # 품질 평가 상한
+    report_quality: Dict[str, Any]             # Judge verdict와 재작업 제안
+    evidence_by_company: Annotated[Dict, merge_company_evidence] # 제한된 근거 발췌
+    followup_results: Annotated[List, merge_followup_results] # 재평가 결과
 ```
 
 > **State 설계 원칙**
 > - 노드는 State 전체가 아니라 자신이 담당한 key만 부분 업데이트한다.
-> - `profile_results`와 `company_results`는 **Reducer**를 사용해 병렬·반복 결과를 누적한다.
-> - 질문별 `retry_count`로 재검색 상한을 제어하고 2회 후에는 unknown으로 종료한다.
+> - `profile_results`, `company_results`, `worker_status`, `evidence_by_company`, `followup_results`는 **Reducer**를 사용해 병렬·반복 결과를 병합한다.
+> - 기존 RAG 코드의 `retry_count`·Query Rewrite 경로는 남아 있지만, 현재 `route_evidence_check`는 임시 전체 통과 분기라 해당 재검색 상한이 실제로 작동하지 않는다. 이 한계는 Agent 품질 평가의 후속 조사 루프와 별개다.
+
+| 설계 항목 | 적용 방식 | 이유·한계 |
+|---|---|---|
+| 제어와 페이로드 | `trace_id`, 상태·라운드·상한은 제어 메타; task·평가 결과·보고서는 작업 데이터 | 라우팅에 필요한 값과 분석 결과를 구분 |
+| 관측성 | 로거와 LangSmith metadata에 trace ID·분기 결정을 기록 | 결정 사유를 State에 중복 적재하지 않음 |
+| State 크기 | 재조사 입력은 회사별 최대 160개 근거 발췌, 각 900자; 전체 보고서는 최종 산출물 | 재작업에 필요한 원문 일부만 유지 |
+| 상관 관계 | UUID `trace_id`를 LangGraph `thread_id`와 LangSmith metadata에 공통 사용 | UI trace와 앱 로그를 연결 |
+| 복구 | 단일 Worker 실패는 오류 결과로 남기고 다른 Worker를 계속 실행; 품질 미달은 제한된 재조사 | 자동 복구 범위는 task 단위이며, 프로세스 재시작 후 이어하기 위한 영구 checkpointer는 구성하지 않음 |
+| 동시 쓰기 | profile·company·evidence·follow-up 결과별 reducer 사용 | fan-out 결과의 누락·덮어쓰기 방지 |
+| 종료 보장 | `max_steps`, `max_evaluation_rounds`, retrieval retry 상한 | 반복 재조사와 검색 루프를 제한 |
 
 ---
 
@@ -368,7 +387,7 @@ capstone-v1/
 | **LangGraph** | 상태 기반 Multi-Agent 그래프 오케스트레이션 | `>=1.2` |
 | **OpenAI GPT-4o-mini** | 투자 판단 LLM (Structured Output 지원) | — |
 | **FAISS** | 벡터 유사도 검색 (로컬 인덱스) | `faiss-cpu` |
-| **OpenAI Embeddings** | 문서 임베딩 (`text-embedding-3-small`) | — |
+| **HuggingFace Sentence Transformers** | 로컬 문서 임베딩 (`intfloat/multilingual-e5-base`) | — |
 | **Pydantic v2** | State Schema / Agent 출력 스키마 강제 | `>=2.13` |
 | **Rich** | 터미널 대시보드 UI (스피너, 패널, 프로그레스바) | `>=14.3` |
 | **PyPDF** | PDF 문서 파싱 | `>=6.19` |
@@ -467,25 +486,26 @@ workflow.add_edge("rewrite_query", "retrieve_evidence")
 
 #### 병렬 실행 — `Send` API (Fan-out)
 
-5개의 Profile Agent를 **동시에** 실행하기 위해 LangGraph의 `Send` API를 사용합니다.
+Planner가 만든 구조화 task를 **동시에** 실행하기 위해 LangGraph의 `Send` API를 사용합니다. 프로필 수는 코드에 고정하지 않고, 설정에서 불러와 State에 저장한 task 개수로 정합니다.
 
 ```python
 from langgraph.constants import Send
 
-def route_to_profiles(state):
-    """공통 점수 계산 후, 5개 에이전트에 동일한 데이터를 동시에 전송"""
+def route_profile_workers(state):
+    """Planner가 State에 저장한 작업만 worker에 전달"""
     return [
-        Send("profile_agent", {
-            "profile_name": p,                                    # "기술중심형", "안정형", ...
+        Send("profile_worker", {
+            "task": task,
             "domain_scores": state["domain_scores"],              # 공통 점수 (동일)
             "validated_evidence": state["validated_evidence"],     # 검증된 근거 (동일)
             "current_company": state["current_company"]           # 현재 기업 (동일)
         })
-        for p in get_all_profiles()  # → 5개의 Send 객체 리스트 반환
+        for task in state["structured_tasks"]  # → 계획된 수만큼 Send 객체 반환
     ]
 
-# 그래프에 등록: score_common이 끝나면 5개 profile_agent가 동시 실행
-workflow.add_conditional_edges("score_common", route_to_profiles, ["profile_agent"])
+# score_common 뒤 planner가 계획을 State에 저장하고, 그 다음 worker fan-out 실행
+workflow.add_edge("score_common", "plan_profile_tasks")
+workflow.add_conditional_edges("plan_profile_tasks", route_profile_workers, ["profile_worker"])
 ```
 
 > **핵심 포인트**: `Send`는 동일한 노드(`profile_agent`)를 **서로 다른 입력**으로 여러 번 동시에 띄우는 LangGraph의 병렬 실행 메커니즘입니다. 5개의 결과는 State의 `profile_results` 필드에 `Annotated[List, operator.add]` Reducer를 통해 자동으로 누적됩니다.
@@ -618,7 +638,7 @@ uv run python main.py
 🧠 3단계: 문서 스캔 및 지식 베이스 구축
 📄 읽은 파일: ACCURE_RAG_source_pack.pdf (기업명: ACCURE) - 6 페이지/섹션
 ✂️ 청킹 완료: 총 14 개의 청크 생성 (크기: 500, 오버랩: 50)
-🧠 OpenAI 임베딩 및 FAISS DB 생성 중...
+🧠 로컬 HuggingFace 임베딩 및 FAISS DB 생성 중...
 ✅ DB 저장 완료!
 ✔ 문서 임베딩 완료
 
@@ -711,3 +731,49 @@ uv run python main.py
 - 본 시스템은 공개문서 기반 투자검토 보조도구이며 실제 투자·법률·안전 실사를 대체하지 않는다.
 - 비공개 매출·고객계약·모델데이터는 unknown으로 남기고 데이터룸 요청으로 연결한다.
 - Embedding 선정과 Agent 임계값은 설계 가설이며 실제 평가 결과로 보정한다.
+
+---
+
+## 14. AI Agent 실습: Orchestrator-Workers
+
+이 브랜치는 기존 RAG 분석 흐름과 보고서 구성을 유지하며 Orchestrator-Workers 패턴을 적용합니다. PDF는 기존 보고서에 근거 발췌와 품질 평가를 더해 7쪽이며, 안내된 최대 10쪽 이내입니다.
+
+### 작업 흐름
+
+1. Planner가 설정된 Profile을 회사별 구조화 작업으로 State에 기록합니다.
+2. `Send`가 저장된 작업 수에 맞춰 worker를 동적으로 실행합니다. 각 worker는 기존 근거 평가 모듈을 사용합니다.
+3. worker 결과는 reducer로 누적되고, 기존 synthesizer가 관점별 점수·근거 충족률·판정 유보를 종합합니다.
+4. 보고서 생성 뒤 규칙 검사와 Judge를 결합해 Groundedness, Neutrality, Bias control을 평가합니다.
+5. 미달이면 Judge 제안 작업을 검증해 실행하고, 제안이 없거나 유효하지 않으면 실패 항목에 맞춘 대체 질문을 계획합니다. 로컬 RAG 검색과 해당 Profile 재평가 후 보고서를 갱신합니다. 최대 2회 평가하며, 즉 후속 조사 루프는 최대 1회입니다.
+
+### 실습 가이드 정합성
+
+| 가이드 요구 | 적용 위치 | 선택·상태 |
+|---|---|---|
+| 구조화 계획을 먼저 State에 저장 | `plan_profile_tasks` → `structured_tasks` | 프로필 설정마다 회사·관점·focus를 task로 생성 |
+| 계획 이후 동적 fan-out | `route_profile_workers` | task 목록을 `Send`로 보내므로 worker 수는 코드에 고정하지 않음 |
+| 병렬 결과를 Synthesizer에서 통합 | `profile_worker` → `synthesize_company` | 기존 프로필 판단을 누적한 뒤 기업 단위로 집계 |
+| Worker 실패 대안 | `profile_agent_node`, `followup_worker` | 오류 결과를 기록하고 다른 Worker를 계속 진행 |
+| State 필드 충돌·무한 증가 제어 | `src/schemas.py` reducer | 결과별 병합 규칙과 기업당 근거 수·길이 상한 적용 |
+| 보고서 품질 평가와 미달 시 Loop | `evaluate_report_quality` → `plan_followup_tasks` | 결정 규칙 + LLM Judge의 hybrid 평가, 최대 2회 평가 |
+| trace와 관측성 | `main.py`, `src/agents/orchestrator.py` | `trace_id`를 `thread_id`·LangSmith metadata·분기 로그에 전달 |
+| 복구 경계 | worker 상태·오류 결과·평가 라운드 | task 실패는 계속 처리. 프로세스가 종료된 뒤 재개하는 영구 checkpointer는 아직 없음 |
+
+### State와 복구
+
+- **Payload:** 계획된 worker task, 기업별 최대 160개 발췌 근거, 평가 결과, 보고서.
+- **Control:** `trace_id`, worker별 상태, `step_count`, 평가 라운드 및 상한.
+- 기업별 근거는 출처와 평가 항목 기준으로 중복 제거하고 각 발췌를 900자로 제한합니다. 원문 전체를 반복 저장하지 않습니다.
+- worker 하나가 실패하면 오류 상태와 해당 Profile의 판단 유보를 기록하고 나머지 결과를 계속 처리합니다.
+- Judge 오류는 통과로 간주하지 않습니다. 대체 질문으로 후속 조사하고 한 번 재평가한 뒤, 여전히 미달이면 PDF에 사람 검토 필요로 표시합니다.
+
+### 실행 산출물
+
+- Markdown: `output/final_multi_agent_report.md`
+- PDF: `output/final_report.pdf` (기존 보고서 구성에 품질 평가 페이지를 추가, 최대 10쪽)
+- LangSmith metadata: `trace_id`, `pattern=orchestrator-workers`
+- LangSmith trace screenshots: 동적 worker 분기를 포함한 실제 실행 후 `tracing-1.png`, `tracing-2.png` 순서로 저장해야 합니다.
+
+### Contributors
+
+- **강도희** — 구조화된 작업 계획, 동적 worker 분배, State reducer·복구 메타데이터, 보고서 품질 평가와 제한된 후속 조사 흐름.
