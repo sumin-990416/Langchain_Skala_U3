@@ -1,450 +1,201 @@
-# Battery Intelligence 스타트업 투자평가 Multi-Agent RAG
+# 배터리 AI 스타트업 다관점 평가 — Orchestrator-Workers
 
-> SKALA 4기 · 울산 3반 · 4조  
-> LangGraph 기반 Multi-Agent + Agentic RAG 투자평가 시스템
+SKALA 4기 · 울산 3반 · 4조. 배터리 AI 스타트업의 공개 문서를 RAG로 검색하고, **기술 성숙도·시장성·이해관계자·도메인 적용**의 네 관점에서 근거와 한계를 정리하는 LangGraph 프로젝트입니다. 보고서는 `SUMMARY`, 기업별 관점 분석, `REFERENCE`로 구성하며 투자 추천·순위·우열 점수를 만들지 않습니다.
 
-## 1. 프로젝트 한 줄 소개
+## Overview
 
-배터리 AI 스타트업의 공개자료를 RAG로 검색하고, 동일한 근거를 **기술·안정·성장·균형·사업성의 5개 투자 관점**으로 병렬 평가하여 근거 기반 투자보고서를 생성합니다.
+- **목적:** 기업마다 다른 기술·적용 영역을 조사하고, 확인 내용과 상충 근거·미확인 사항을 함께 제시합니다.
+- **패턴:** Orchestrator가 구조화된 조사 계획을 먼저 저장하고, 계획에 따른 Worker를 병렬 실행한 뒤 Synthesizer가 집계합니다. 적용 분야가 여러 개면 작업을 분할하여 기업마다 작업 수가 달라집니다.
+- **선정 이유와 trade-off:** 조사 항목이 실행 시 결정되는 보고서 작업에 적합합니다. 병렬 조사로 시간을 줄이지만 LLM 계획·품질 판정의 변동성과 호출 비용이 늘어납니다. 계획·인용 검증, 결정 로그, 재시도 상한으로 실행을 추적합니다.
+- **동적 처리:** 네 관점은 필수 커버리지이고, Worker의 개수와 질문은 `ResearchPlan`으로 결정됩니다. `Send`는 저장된 `plan`을 순회합니다. API 없는 데모도 허구 회사 A에 5개, B에 4개의 작업을 생성합니다.
 
-이 프로젝트의 핵심은 단순히 LLM에게 투자 여부를 질문하는 것이 아닙니다.
+패턴 참고: [LangGraph 공식 Workflows and agents 문서](https://docs.langchain.com/oss/python/langgraph/workflows-agents).
 
-1. 평가에 사용할 근거를 먼저 수집합니다.
-2. 공통 기준과 투자자 유형별 기준을 분리해 평가합니다.
-3. 근거가 부족하면 억지로 점수를 만들지 않고 `판단 유보`로 남깁니다.
-4. 최종 결과를 5페이지 이내의 차트 포함 PDF로 출력합니다.
+## Selected Companies
 
----
+기본 live 대상은 기존 자료 풀과 연결되는 아래 세 기업입니다. `--company`로 다른 대상을 지정할 수 있으나, 해당 기업의 입력 문서도 필요합니다.
 
-## 2. 문제 정의
-
-배터리 AI 기업은 다음과 같은 이유로 직접 비교하기 어렵습니다.
-
-- SOC·SOH·RUL 등 기업마다 제시하는 기술지표가 다릅니다.
-- 같은 정확도라도 시험 조건, 배터리 화학계, 데이터 규모가 다릅니다.
-- 회사의 홍보자료와 독립 검증자료가 함께 검색됩니다.
-- 매출, 계약, 고객 유지율처럼 비상장기업이 공개하지 않는 정보가 많습니다.
-- 기술력이 높더라도 안정성 또는 사업성이 부족할 수 있습니다.
-
-따라서 하나의 종합 프롬프트가 모든 판단을 수행하면 관점이 섞이고, 공개되지 않은 정보를 추정할 위험이 있습니다. 이를 해결하기 위해 **근거 수집과 투자 판단을 분리**하고, 투자 판단을 다시 **5개 전문 Agent**로 분할했습니다.
-
----
-
-## 3. 핵심 차별점
-
-### 차별점 1. 하나의 점수가 아니라 5개의 투자 관점
-
-모든 Agent가 같은 근거를 사용하지만 중요하게 보는 기준은 다릅니다.
-
-| Agent | 핵심 관점 | 주요 확인 내용 |
-|---|---|---|
-| 기술중심형 | 기술의 실제 검증 수준 | 예측 성능, 독립 검증, 데이터 경쟁력, BMS/ESS 연동, 일반화, 기술 방어력 |
-| 안정형 | 손실 가능성과 지속 가능성 | 안전·규제, 재무 지속성, 데이터 이용 권한, 제조물책임 |
-| 성장형 | 성장 속도와 확장 가능성 | 시장 성장률, 유료 전환, ARR 성장, 확장성, 데이터 네트워크 효과 |
-| 균형형 | 영역 간 연결성 | 기술-시장 적합성, 시장-수익 전환성, 기술-리스크 양립성, 팀-사업 실행력 |
-| 사업성중심형 | 실제 돈을 버는 구조 | 수익모델, 고객·계약, 상용화, 팀의 사업 실행력 |
-
-이 구조를 통해 “기술은 좋지만 수익모델이 약한 기업”과 “성장은 빠르지만 안전·규제 위험이 큰 기업”을 서로 다른 관점으로 설명할 수 있습니다.
-
-### 차별점 2. 공통 평가 70% + 유형별 독립 평가 30%
-
-각 Agent의 최종점수는 다음 구조를 사용합니다.
-
-```text
-공통 프로필 점수 = Σ(기술·시장·재무·리스크·팀 점수 × Agent별 영역 가중치)
-
-Agent 최종점수 = 공통 프로필 점수 × 70%
-                + Agent별 독립 세부점수 × 30%
-```
-
-- **공통 70%**는 모든 Agent가 기업의 기본적인 투자 매력을 같은 틀에서 평가하게 합니다.
-- **유형별 30%**는 각 Agent의 목적에 맞는 별도 파라미터로 계산합니다.
-- 유형별 30%는 공통 점수를 다시 복사하거나 재가중한 값이 아니라, 각 관점에 맞게 독립적으로 평가합니다.
-
-예를 들어 성장형 Agent의 30%는 시장 성장, 고객 전환, 매출 성장, 확장성, 데이터 네트워크 효과, 실행역량으로 구성됩니다. 기술형 Agent는 예측 성능과 검증 신뢰성을 중심으로 별도의 기술 점수를 만듭니다.
-
-### 차별점 3. 근거 부족을 0점으로 처리하지 않음
-
-공개자료가 없다는 것은 성과가 나쁘다는 뜻이 아닙니다. 따라서 미확인 항목을 0점으로 바꾸지 않습니다.
-
-| 근거 상태 | 처리 방식 |
+| 기업 | 조사 범위 |
 |---|---|
-| 충분한 직접 근거 | 항목 평가 및 점수 산출 |
-| 일부 근거만 확인 | 항목별 상태 기록, 종합점수 산출 조건 확인 |
-| 핵심 지표 미확인 | `weighted_score=None`, 판단 유보 |
-| 평가 대상이 아님 | `NOT_APPLICABLE`, 충족률 분모에서 제외 |
-| 상충 근거 존재 | 반대 근거로 기록하고 추가 실사 요청 |
+| ACCURE | BESS·EV 배터리 이상·안전·성능·열화 분석 |
+| volytica diagnostics | ESS 운영 데이터 기반 SOH·열화·안전 분석 |
+| Electra Vehicles | EV 배터리 디지털 트윈, SOC·SOH 예측 |
 
-판단 유보가 발생해도 Graph를 중단하지 않습니다. 해당 Agent의 점수는 미산출로 유지하고, 부족한 근거와 추가 실사 질문을 최종 보고서의 **근거 부족 및 판단 유보** 항목에 표시합니다.
+## Features and Agents
 
----
+| 구성 | 책임 |
+|---|---|
+| Orchestrator | 기업별 질문·검색어·분할 사유를 `ResearchTask`로 계획하고 검증합니다. 모델 계획 실패 시 기업 설명에 따른 4~5개 작업으로 fallback합니다. |
+| Workers | 작업별 RAG 검색 → 구조화 분석 → 인용 검증을 수행합니다. 같은 Worker 구현에 네 관점의 작업을 각각 전달합니다. |
+| Synthesizer | `task_registry`와 `worker_results`를 회사·관점별로 집계하고 실패·근거 부족 상태를 보존합니다. |
+| Report Generator | 주장·직접 인용·원문 위치·미확인 사항을 Markdown으로 조립합니다. |
+| Quality Evaluator | 보고서 생성 후 네 품질 항목을 평가하고, 미달 회사·관점을 Orchestrator에 재작업 요청합니다. |
 
-## 4. 전체 시스템 구조
+- PDF/TXT를 500자 청크, 50자 overlap으로 처리하고 FAISS에서 검색합니다.
+- 주장마다 `evidence_id`, 직접 인용, 파일·페이지·출처 그룹을 연결합니다. 원문에 없는 인용은 해당 주장 전체를 제외합니다.
+- 유리한 근거와 함께 한계·상충·미확인 사항을 기록하고, 회사·관점별 인용 출처 그룹을 검사합니다.
+- Worker 예외는 기본 최대 2회 시도 후 `failed` 결과로 남깁니다. 다른 Worker는 계속 실행하며, 실패 관점은 품질 평가와 제한된 재작업 루프에 포함됩니다.
+- 품질 미달 상태로 상한에 도달해도 결과와 종료 사유를 저장합니다. 해당 실행을 품질 통과로 표시하지 않습니다.
+
+## Tech Stack
+
+| 항목 | 적용 |
+|---|---|
+| Framework | LangGraph `StateGraph`, 동적 `Send`, SQLite checkpoint |
+| LLM / Generator | OpenAI `gpt-4o-mini` 기본값; `--generator-model`로 변경 |
+| LLM / Judge | OpenAI `gpt-4o-mini` 기본값; `--judge-model`로 변경 |
+| Structured Output | Pydantic 계획·Worker 결과·품질 verdict |
+| Retrieval | FAISS; 검색어별 Top-12에서 회사 관련 근거를 선택하고 작업당 최대 15개 보존 |
+| Retrieval 평가 | **Hit Rate@K, MRR 미측정** — 정답 근거 데이터셋과 별도 평가가 필요 |
+| Embedding | `intfloat/multilingual-e5-base`, 로컬 CPU, 정규화 |
+| Reports / Observability | Markdown, PDF, 외부 JSON/JSONL, LangSmith 선택 설정 |
+
+## State Schema
+
+정의: [src/orchestration/schemas.py](src/orchestration/schemas.py). State는 제어 흐름과 재개에 필요한 최신 산출물을 보관합니다.
+
+| 필수 설계 항목 | 구현과 근거 |
+|---|---|
+| 제어 vs 페이로드 분리 | `trace_id`, `step_count`, `node_status`, `last_error`, 재시도·종료 설정은 제어 메타입니다. `plan`, `task_registry`, `worker_results`, `synthesis`, `report_draft`, `eval_result`는 작업 페이로드입니다. |
+| 관측성 위치 | 노드 결정과 사유는 `{trace_id, node, decision, reason, ts}`를 포함한 외부 `decisions.jsonl`에 기록합니다. 계획·평가 이력도 외부 JSON으로 저장합니다. |
+| 지속성 비용 | 원문은 `evidence/` 파일로 분리합니다. State에는 짧은 주장·인용·출처 메타와 최신 결과를 보존하며, 회사·작업·목록 길이를 제한합니다. |
+| 상관 | 동일한 `trace_id`로 State, 실행 폴더, 결정 로그와 checkpoint의 `thread_id`를 연결합니다. |
+| 재개/복구 | SQLite checkpoint가 최신 State와 다음 실행 위치를 저장합니다. `--resume`으로 같은 실행 폴더와 thread를 재개합니다. 원문 파일과 checkpoint가 함께 있어야 합니다. |
+| 동시 처리 | 병렬 Worker는 `worker_results`만 갱신합니다. `task_id`를 키로 사용하는 reducer가 결과를 upsert하여 재실행 결과가 중복 누적되지 않습니다. `task_registry`도 같은 병합 방식을 사용합니다. |
+| 종료 보장 | 기업 최대 5개, 기업별 작업 최대 8개, 관점별 최대 2개입니다. 품질 재작업은 기본 2회(허용 0~3), Worker 시도는 기본 2회(허용 1~3), 제어 단계 상한 기본 30으로 제한합니다. |
+
+`ResearchTask`는 `task_id`, `company_name`, `perspective`, `question`, `queries`, `rationale`을 가집니다. `plan`은 이번 실행 대상으로, `task_registry`는 최초 및 재작업 대상의 전체 목록으로 사용합니다. `worker_results[task_id]`는 최신 결과를 유지합니다.
+
+## Report Quality
+
+| 항목 | 검사 |
+|---|---|
+| Groundedness | 주장·근거 ID·원문 인용·본문·REFERENCE 연결을 확인합니다. hybrid에서는 주장 의미가 인용 문맥으로 지지되는지도 Judge가 평가합니다. |
+| 중립성 | 투자 추천·기업/기술 우열 표현을 검사하고, hybrid에서는 문맥도 평가합니다. |
+| 편향 통제 | 회사·관점별 최소 2개 인용 출처 그룹과 한계·상충·미확인 또는 출처 제한을 확인합니다. |
+| 관점 커버리지 | 모든 회사의 네 관점에 완료 Worker의 유효 인용 주장이 있어야 합니다. 미확인 항목만으로 통과하지 않습니다. |
+
+live의 기본 `hybrid`는 결정적 검사와 LLM Judge를 **모두** 통과해야 합니다. Judge 호출이 실패하면 품질 미달로 처리합니다. `--quality-mode deterministic`은 정적 검사만 수행하며, 데모는 이 모드로 고정됩니다. 인용 substring 일치는 인용의 실재 여부를 확인하는 검사로, 주장 의미나 사실의 진실성을 보장하지 않습니다.
+
+출처 그룹은 publisher/명시적 metadata 그룹, 원출처 URL의 hostname, 파일명 순으로 구성합니다. publisher·URL이 없는 파일 단위 그룹은 **대리지표이며 독립 출처를 보장하지 않습니다**. 하나의 파일에 여러 원출처가 섞이거나 같은 발행자가 여러 파일을 만들면 그룹 판정에 한계가 있습니다. 실제 독립성은 추가 검증 대상입니다.
+
+## Architecture
 
 ```mermaid
 flowchart TD
-    A[PDF/TXT 입력] --> B[문서 로딩 및 청킹]
-    B --> C[multilingual-e5-base 임베딩]
-    C --> D[FAISS Vector DB]
-    D --> E[기업별 평가 질문 생성]
-    E --> F[관련 근거 Top-K 검색]
-    F --> G[근거 검증]
-    G --> H[공통 5개 영역 평가]
-    H --> I{Send: 5개 Agent 병렬 실행}
-    I --> T[기술중심형]
-    I --> S[안정형]
-    I --> R[성장형]
-    I --> B2[균형형]
-    I --> M[사업성중심형]
-    T --> J[기업별 결과 종합]
-    S --> J
-    R --> J
-    B2 --> J
-    M --> J
-    J --> K{남은 기업?}
-    K -->|있음| E
-    K -->|없음| L[기업 비교]
-    L --> N[Markdown 및 PDF 보고서]
+    S([START]) --> I[initialize: 입력·상한 설정]
+    I --> O[orchestrator: 구조화 계획 저장]
+    O --> F{저장된 plan으로 동적 Send}
+    F --> W[worker × 계획 작업 수: 검색·분석·인용 검증]
+    W --> Y[synthesizer: task_id별 최신 결과 집계]
+    Y --> R[generate_report: Markdown 조립]
+    R --> Q[evaluate_report: 4개 품질 항목]
+    Q --> D{품질 통과 또는 상한 도달?}
+    D -->|미달·재작업 가능| O
+    D -->|통과 또는 상한| E[finalize: 보고서·품질·종료 사유 저장]
+    E --> T([END])
 ```
 
-### 기술별 역할
-
-| 기술 | 역할 |
-|---|---|
-| LangChain | 문서 로딩, 청킹, 임베딩, FAISS 검색, 프롬프트 및 구조화 출력 |
-| LangGraph | State 관리, 실행 순서, 조건 분기, 기업 반복, 5개 Agent 병렬 실행 |
-| Pydantic | Evidence, ProfileResult, CompanyResult 등 결과 스키마 검증 |
-| FAISS | 평가 질문과 관련된 문서 청크 검색 |
-| ReportLab / WeasyPrint | 차트 및 PDF 투자보고서 출력 |
-
-### 실제 코드로 보는 LangChain
-
-#### 1. 문서 로딩과 청킹
-
-[`src/rag/ingest.py`](src/rag/ingest.py)에서 LangChain Loader로 PDF/TXT를 읽고 `RecursiveCharacterTextSplitter`로 검색 단위를 만듭니다.
-
-```python
-if file.suffix.lower() == ".pdf":
-    loader = PyPDFLoader(str(file))
-elif file.suffix.lower() == ".txt":
-    loader = TextLoader(str(file), encoding="utf-8")
-
-loaded_docs = loader.load()
-
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=500,
-    chunk_overlap=50,
-    separators=["\n\n", "\n", ".", " ", ""],
-)
-split_docs = text_splitter.split_documents(docs)
-```
-
-발표 포인트는 “PDF 전체를 LLM에 넣는 것이 아니라, 의미 검색이 가능한 500자 단위 청크로 나눈다”는 것입니다. 50자 overlap은 청크 경계에서 문맥이 끊기는 문제를 줄입니다.
-
-#### 2. 임베딩과 FAISS 검색
-
-[`src/rag/vector_store.py`](src/rag/vector_store.py)에서 다국어 E5 임베딩을 만들고, 질문과 의미적으로 가까운 문서를 검색합니다.
-
-```python
-def get_embeddings():
-    return HuggingFaceEmbeddings(
-        model_name="intfloat/multilingual-e5-base",
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
-
-results = db.similarity_search_with_score(query, k=k)
-```
-
-단순 키워드 일치가 아니라 질문과 청크를 벡터로 변환해 의미적으로 가까운 근거를 가져옵니다. 검색 결과는 이후 Agent가 사용하는 `Evidence` 객체로 변환됩니다.
-
-#### 3. 프롬프트와 구조화 출력
-
-성장형 Agent는 LangChain의 `ChatPromptTemplate`과 Pydantic 구조화 출력을 연결합니다.
-
-```python
-growth_scoring_llm = llm.with_structured_output(GrowthCustomEvaluation)
-
-growth_scoring_prompt = ChatPromptTemplate.from_messages([
-    ("system", "제공된 검증 근거만 사용해 성장형 지표를 평가하세요."),
-    ("user", "기업명: {company_name}\n근거: {evidence_text}"),
-])
-
-growth_evaluation = (
-    growth_scoring_prompt | growth_scoring_llm
-).invoke({
-    "company_name": company_name,
-    "evidence_text": evidence_text,
-})
-```
-
-`prompt | llm`은 LangChain Runnable 파이프라인입니다. 자유 형식 문자열이 아니라 `GrowthCustomEvaluation` 형태로 결과를 받아 상태, 점수, 근거 ID와 미확인 항목을 안정적으로 후속 노드에 전달합니다.
-
-### 실제 코드로 보는 LangGraph
-
-#### 1. State와 reducer
-
-[`src/schemas.py`](src/schemas.py)의 State는 전체 Graph가 공유하는 데이터 계약입니다.
-
-```python
-class InvestmentAgentState(TypedDict):
-    current_company: Optional[Company]
-    validated_evidence: List[Evidence]
-    domain_scores: Dict[Domain, float]
-    profile_results: Annotated[List[ProfileResult], reset_or_add]
-    company_results: Annotated[List[CompanyResult], operator.add]
-    final_comparison: Optional[ComparisonResult]
-```
-
-각 노드는 전체 객체를 직접 수정하지 않고 필요한 필드만 반환합니다. `profile_results`의 reducer는 병렬 실행된 다섯 Agent 결과를 하나의 리스트로 합칩니다.
-
-#### 2. `Send`를 이용한 5개 Agent 병렬 실행
-
-[`src/graph.py`](src/graph.py)의 `route_to_profiles()`가 프로필마다 하나의 `Send`를 만듭니다.
-
-```python
-def route_to_profiles(state: InvestmentAgentState):
-    return [
-        Send("profile_agent", {
-            "profile_name": profile,
-            "domain_scores": state.get("domain_scores", {}),
-            "validated_evidence": state.get("validated_evidence", []),
-            "current_company": state.get("current_company"),
-        })
-        for profile in get_all_profiles()
-    ]
-```
-
-이 코드가 공통 점수와 동일한 검증 근거를 기술·안정·성장·균형·사업성 Agent에 동시에 전달합니다. Agent별 결과는 앞서 정의한 reducer로 다시 모입니다.
-
-#### 3. 조건 분기와 기업 반복
-
-```python
-workflow.add_conditional_edges(
-    "score_common",
-    route_to_profiles,
-    ["profile_agent"],
-)
-
-workflow.add_conditional_edges(
-    "save_company_result",
-    route_next_company,
-    {
-        "select_company": "select_company",
-        "compare_companies": "compare_companies",
-    },
-)
-```
-
-첫 번째 조건부 edge는 5개 Agent 병렬 평가를 시작합니다. 두 번째 조건부 edge는 아직 평가하지 않은 기업이 있으면 `select_company`로 돌아가고, 모든 기업이 끝나면 비교 단계로 이동합니다.
-
-근거 재검색 분기도 Graph에 정의되어 있지만, 현재 `route_evidence_check()`가 임시로 항상 충분하다고 처리합니다. 발표에서는 **조건 분기 구조는 구현했고, 근거 충분성에 따른 자동 질의 재작성은 개선 과제**라고 구분해 설명합니다.
-
----
-
-## 5. RAG 파이프라인
-
-### 문서 처리
+## Directory Structure
 
 ```text
-data/raw 문서
-→ PDF/TXT 로딩
-→ 500자 단위 청킹, 50자 overlap
-→ intfloat/multilingual-e5-base 임베딩
-→ FAISS 인덱스 저장
+main.py                       Orchestrator-Workers CLI
+legacy_main.py                기존 투자평가 실행 경로
+src/orchestration/
+  schemas.py                  계획·결과·State·reducer
+  planner.py                  계획 생성·검증·fallback
+  worker.py / evidence.py     관점별 RAG 분석·인용 검증
+  reporting.py / quality.py   집계·보고서·품질 판정
+  finalize.py / pdf_report.py 최종 산출물·10쪽 이내 PDF
+  observability.py / demo.py  외부 로그·API 없는 허구 fixture
+  checkpoints.py              State 모델 복원 allowlist
+src/graph.py                  동적 fan-out·재작업·종료
+src/cli.py                    CLI·SQLite 체크포인트 재개
+src/rag/                      기존 문서 ingest·E5·FAISS
+configs/                      기존 투자 프로필·루브릭
+data/raw/                     입력 PDF/TXT
+data/processed/faiss_index/   검색 인덱스
+output/runs/<trace_id>/        실행별 보고서·근거·checkpoint
+tests/                        패턴·품질·실패 처리 검증
 ```
 
-`multilingual-e5-base`는 한국어와 영문이 혼합된 기업·시장 자료를 로컬 CPU 환경에서도 처리할 수 있어 선택했습니다. 임베딩을 정규화하여 의미 기반 검색의 일관성을 확보했습니다.
+## Usage
 
-| 설정 | 실제 적용값 |
-|---|---|
-| 제공 모델 | Hugging Face `intfloat/multilingual-e5-base` |
-| LangChain 클래스 | `langchain_community.embeddings.HuggingFaceEmbeddings` |
-| 실행 장치 | CPU |
-| 벡터 정규화 | `normalize_embeddings=True` |
-| Vector Store | FAISS |
-| 검색 방식 | `similarity_search_with_score` |
-
-OpenAI는 투자평가와 구조화 출력에 사용하는 LLM이며, 문서 임베딩에는 사용하지 않습니다. 즉 역할은 다음과 같이 구분됩니다.
-
-```text
-문서 임베딩·검색: multilingual-e5-base + FAISS
-투자평가·구조화 출력: OpenAI gpt-4o-mini
-```
-
-### 근거 중심 평가
-
-검색된 자료는 `Evidence` 객체로 변환됩니다.
-
-```text
-item_id          평가항목 ID
-content          검색된 원문 청크
-source_id        출처 식별자
-evidence_grade   근거 등급
-is_direct        대상 기업과의 직접 관련 여부
-```
-
-Agent는 입력된 근거만 사용하도록 제한되며, 인용한 문장이 실제 검색 청크에 존재하는지도 확인합니다. 확인되지 않은 정보는 `unknown_items`와 `due_diligence_questions`로 분리합니다.
-
----
-
-## 6. LangGraph 설계 포인트
-
-### State 기반 연결
-
-`InvestmentAgentState`가 기업, 질문, 검색 근거, 공통 점수, Agent 결과와 보고서를 단계별로 전달합니다.
-
-### 병렬 Agent 실행
-
-공통 평가가 끝나면 LangGraph의 `Send`를 사용해 동일한 근거와 공통 점수를 5개 Agent에 전달합니다. 각 Agent 결과는 reducer를 통해 `profile_results`에 누적됩니다.
-
-### 기업 반복
-
-한 기업의 5개 평가가 끝나면 결과를 저장하고 다음 기업으로 돌아갑니다. 모든 기업이 끝난 뒤에만 기업 비교와 보고서 생성을 수행합니다.
-
-### 판단 유보의 전파
-
-어떤 Agent가 근거 부족으로 점수를 만들지 못하더라도 예외로 종료하지 않습니다.
-
-```text
-Agent 판단 유보
-→ ProfileResult(weighted_score=None)
-→ 기업 종합 단계에서 미산출 Agent 확인
-→ 최종 판정 '근거 부족 판단 유보'
-→ 보고서에 부족 근거와 추가 요청 자료 표시
-```
-
-높은 일부 점수가 근거 부족 판정을 덮어쓰지 못하도록 한 것이 중요한 설계 포인트입니다.
-
----
-
-## 7. 주요 데이터 모델
-
-```python
-class ProfileResult(BaseModel):
-    profile_name: str
-    weighted_score: Optional[float]
-    decision: Optional[FinalDecision]
-    evidence_coverage: Optional[float]
-    supporting_evidence_ids: List[str]
-    contrary_evidence_ids: List[str]
-    unknown_items: List[str]
-    recommendation: str
-    due_diligence_questions: List[str]
-```
-
-`weighted_score`를 `Optional`로 설계해 점수 없음과 0점을 구분합니다. 이 값은 종합 단계와 보고서까지 그대로 유지됩니다.
-
----
-
-## 8. 투자 보고서 핵심 포인트
-
-최종 보고서는 점수만 보여주는 결과표가 아니라, 투자자가 다음 행동을 결정할 수 있는 자료를 목표로 합니다.
-
-1. 기업별 공통 영역점수와 산출 가능한 Agent 점수를 비교합니다.
-2. 추천·조건부·보류·판단 유보를 구분합니다.
-3. 일부 Agent만 산출된 평균은 **참고 평균**으로 표시합니다.
-4. 근거가 부족한 Agent와 핵심 항목을 별도 카테고리로 보여줍니다.
-5. 추가로 받아야 할 매출, ARR, 계약, 성능 검증 원자료를 실사 질문으로 연결합니다.
-6. 5페이지 이내의 차트 포함 PDF로 핵심 결과를 압축합니다.
-
-> 점수가 높아 보이는 것보다, 어떤 근거로 그 점수가 만들어졌고 무엇을 아직 모르는지 보여주는 것이 더 중요합니다.
-
----
-
-## 9. 프로젝트 구조
-
-```text
-main.py                          전체 실행 진입점
-configs/profiles.yaml            5개 Agent의 영역 가중치와 평가 초점
-configs/rubric.yaml              공통 평가 질문
-src/schemas.py                   State 및 구조화 결과 모델
-src/graph.py                     LangGraph 노드·분기·병렬·반복 연결
-src/rag/ingest.py                문서 로딩, 청킹, 임베딩
-src/rag/vector_store.py          FAISS 저장 및 검색
-src/agents/profile.py            5개 Agent 라우팅
-src/agents/profiles/             Agent별 독립 30% 평가
-src/agents/profiles/_evidence.py 공통 근거 충족 검사
-src/nodes/core.py                검색, 공통 평가, 종합, 보고서 노드
-src/report_generator.py          차트와 PDF 생성
-src/templates/report.html        PDF 보고서 템플릿
-output/                          최종 Markdown/PDF 보고서
-```
-
----
-
-## 10. 실행 방법
+Python 3.12 이상과 `uv`를 사용합니다.
 
 ```bash
 uv sync
-uv run python main.py
+uv run python main.py --demo
 ```
 
-프로젝트 루트의 `.env`에는 `OPENAI_API_KEY`가 필요합니다. 기존 `data/raw` 문서를 그대로 사용할 경우 파일 선택 질문에 `n`을 입력합니다.
+데모는 모델 API 키·임베딩 다운로드·실제 문서 검색 없이 허구 회사 두 곳을 조사합니다. 기본 데모는 LangSmith 전송도 비활성화합니다. 회사·기관·문서·수치는 모두 교육용이며 실제 기업 평가 결과가 아닙니다. PDF를 생략하거나 실행 폴더를 지정할 수 있습니다.
+
+```bash
+uv run python main.py --demo --no-pdf --output-dir output/runs/demo
+```
+
+실제 자료를 평가하려면 `.env.example`을 `.env`로 복사해 `OPENAI_API_KEY`를 설정하고 `data/raw/`에 PDF/TXT를 넣습니다. 첫 실행은 문서 ingest와 임베딩 모델 다운로드가 필요합니다. 파일명에 ACCURE, volytica, Electra가 있으면 기업 metadata로 연결하며, 그 밖의 자료는 청크에 기업명이 있는지 확인합니다.
+
+```bash
+cp -n .env.example .env
+uv run python main.py
+uv run python main.py --company ACCURE --company "Electra Vehicles" --domain "배터리 AI"
+uv run python main.py --skip-ingest --no-pdf --quality-mode hybrid \
+  --max-quality-retries 2 --max-worker-attempts 2 \
+  --generator-model gpt-4o-mini --judge-model gpt-4o-mini
+uv run python main.py --resume output/runs/demo
+```
+
+`--skip-ingest`는 이미 생성된 로컬 FAISS 인덱스를 사용합니다. `--resume`은 실행 폴더의 `checkpoint.sqlite`와 같은 thread를 사용하며 원문·계획 파일을 함께 유지해야 합니다. 실행별 주요 산출물은 다음과 같습니다.
+
+계획 저장 후 중단·재개를 확인하려면 다음 명령을 사용합니다. 기존 출력 폴더는 덮어쓰지 않습니다.
+
+```bash
+uv run python main.py --demo --no-pdf --pause-before-workers --output-dir output/runs/resume-demo
+uv run python main.py --resume output/runs/resume-demo
+uv run python -m unittest discover -s tests -p test_orchestrator_workers.py -v
+```
 
 ```text
-output/final_multi_agent_report.md
-output/final_report.pdf
+report.md / report.pdf      SUMMARY·기업별 관점·REFERENCE 보고서
+plan-r<N>.json             최초/재작업 계획
+quality-r<N>.json          revision별 품질 판정
+quality-final.json         최종 품질 판정
+evidence/                  작업별 검색 원문
+decisions.jsonl            결정·분기 사유
+final-state.json           종료 사유를 포함한 최종 State
+checkpoint.sqlite          동일 thread 재개 상태
 ```
 
----
+PDF는 최대 10쪽의 요약 보고서로 출력하고 상세 내용은 Markdown과 원문 파일로 확인합니다. `--no-pdf`를 사용하면 Markdown과 실행 증거만 생성합니다.
 
-## 11. 구현 범위와 개선 방향
+PDF의 한국어 글꼴은 macOS AppleGothic, Linux NanumGothic, Windows 맑은 고딕을 탐색합니다. 별도 글꼴은 `REPORT_FONT_PATH`로 지정할 수 있습니다.
 
-### 구현 완료
+기존 구현은 `uv run python legacy_main.py`로 실행할 수 있습니다. 이 경로는 고정 5프로필 투자평가와 임시 공통 점수를 포함하며, 새 과제의 동적 계획·네 관점·보고서 품질 루프를 충족하는 기본 경로가 아닙니다.
+기존 PDF 경로의 WeasyPrint는 Pango/GLib 시스템 라이브러리도 필요합니다. 새 PDF 경로는 ReportLab을 사용합니다.
 
-- 문서 로딩·청킹·E5 임베딩·FAISS 저장 및 검색
-- LangGraph 기반 기업 반복과 5개 Agent 병렬 실행
-- 프로필별 영역 가중치와 독립 세부평가
-- 공통 70% + 유형별 30% 결합
-- 근거 부족 시 점수 미산출 및 판단 유보
-- 판단 유보를 포함한 기업 종합
-- Markdown 및 차트 포함 PDF 보고서 생성
+## LangSmith and Submission
 
-### 추가 개선
+`.env`의 `LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`를 설정하면 LangSmith tracing을 활성화합니다. 기존 `LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT` 환경 이름도 호환합니다. 실행 `trace_id`로 로컬 결정 로그와 비교합니다.
 
-- 현재 임시 공통 영역점수를 실제 근거 기반 항목별 채점으로 교체
-- 공통 근거 검증 결과에 따른 질의 재작성·재검색 루프 완성
-- 출처 URL·페이지·claim ID를 보고서까지 연결
-- Agent별 산식과 임계값에 대한 평가 데이터 구축
-- 전체 Graph와 PDF 결과에 대한 자동화 테스트 추가
+데모의 동적 분할을 LangSmith에서 확인하려면 `--trace`를 명시합니다. 모델 호출은 하지 않고 허구 실행의 그래프 trace만 전송합니다.
 
-현재 `score_common()`의 영역점수는 파이프라인 연결 검증을 위한 임시값입니다. 따라서 개별 숫자를 실제 투자결론으로 과장하기보다, **근거 기반 Multi-Agent 평가 구조와 판단 유보 처리 방식**을 핵심 개발 성과로 설명합니다.
+```bash
+uv run python main.py --demo --trace --no-pdf
+# 프로젝트를 직접 지정하려면:
+uv run python main.py --demo --trace --trace-project SKALA --no-pdf
+```
 
----
+터미널에 출력되는 프로젝트에서 `battery-orchestrator-workers` 실행을 열면 하위 `orchestrator`, `worker`, `synthesizer` 노드를 볼 수 있습니다. 종료 전에 explicit Client를 flush하고, 서버에서 해당 run을 읽은 후 trace 링크를 표시합니다. 조회 결과는 실행 폴더의 `langsmith-trace.json`에 기록하며, `uploaded: false`이면 전송 또는 서버 조회가 확인되지 않은 상태입니다. 완료된 실행을 `--resume`하는 경우 그래프가 다시 실행되지 않으므로 새 trace는 생성되지 않습니다.
 
-## 12. Lessons Learned
+제출에는 작업 브랜치의 GitHub 링크, 동적 fan-out과 품질 재작업을 확인할 수 있는 `tracing-1.png`, `tracing-2.png` 등 LangSmith 캡처, 최대 10쪽 PDF가 필요합니다. 허구 데모의 trace를 SKALA 프로젝트에 전송하고 서버에서 `orchestrator` 1개·`worker` 9개를 확인했습니다. 제출용 캡처는 별도로 준비해야 하며, 실제 문서·LLM 기반 live 실행과 Retrieval Hit Rate/MRR은 아직 검증·측정하지 않았습니다.
 
-### 1. Multi-Agent의 핵심은 Agent 수가 아니라 평가 책임의 분리였다
+## Contributors
 
-각 Agent가 무엇을 평가하고, 어떤 독립 파라미터로 30%를 계산하며, 어떤 결과 형식으로 반환하는지를 명확히 해야 했습니다.
+아래 역할은 기존 [configs/profiles.yaml](configs/profiles.yaml)에 명시된 담당 기준입니다. 새 Orchestrator-Workers 기능의 개인별 수행 역할은 실제 담당 내역 확인 후 제출 전에 보완해야 합니다.
 
-### 2. `unknown`과 0점은 완전히 다르다
-
-확인된 일부 항목만 100점으로 환산하면 기업 전체가 충분히 검증된 것처럼 보입니다. 근거 충족률과 핵심 지표 조건을 추가하고, 부족하면 점수를 산출하지 않도록 변경했습니다.
-
-### 3. RAG는 검색보다 근거 검증과 추적이 더 어려웠다
-
-관련 문서를 찾는 것만으로는 투자 근거가 되지 않습니다. 대상 기업의 직접 자료인지, 회사 주장인지 독립 검증인지, 인용문이 원문에 있는지를 확인해야 했습니다.
-
-### 4. 병렬 결과는 공통 스키마가 있어야 합칠 수 있다
-
-`ProfileResult`와 `FinalDecision`을 공통 계약으로 사용하면서 미산출 결과도 동일한 흐름으로 처리할 수 있었습니다.
-
-### 5. 보고서는 마지막 출력이 아니라 평가 로직의 일부였다
-
-보고서까지 판단 유보와 미확인 항목을 표현할 수 있어야 평가 로직이 완성된다는 점을 배웠습니다.
-
----
-
-## 13. 발표 결론
-
-저희 팀은 투자평가를 하나의 LLM 판단으로 처리하지 않고, **Evidence RAG → 공통 평가 → 5개 관점별 독립 평가 → 종합 → 보고서**의 흐름으로 구현했습니다.
-
-가장 강조하고 싶은 차별점은 다음 세 가지입니다.
-
-1. **5개 전문 Agent가 동일한 근거를 서로 다른 투자 관점으로 평가합니다.**
-2. **공통 70%와 유형별 독립 점수 30%로 일관성과 전문성을 함께 확보합니다.**
-3. **근거가 부족하면 0점이나 추정값을 만들지 않고 판단 유보와 추가 실사로 연결합니다.**
-
-이 구조는 배터리 스타트업뿐 아니라 공개정보가 불완전한 다른 비상장기업 투자평가에도 확장할 수 있습니다.
+- 손연우: 기술중심형 투자 프로필
+- 강도희: 안정형 투자 프로필
+- 김대훈: 성장형 투자 프로필
+- 이연주: 균형형 투자 프로필
+- 정수민: 사업성중심형 투자 프로필

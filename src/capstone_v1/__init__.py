@@ -1,2 +1,3 @@
-def main() -> None:
-    print("Hello from capstone-v1!")
+def main() -> int:
+    from src.cli import main as run
+    return run()

@@ -7,6 +7,7 @@ venv/
 # Env & secrets
 .env
 .env.*
+!.env.example
 
 # OS / Editor 
 .DS_Store
@@ -14,5 +15,9 @@ venv/
 
 # Generated QA artifacts
 tmp/
+output/runs/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
 # 환경 스캐폴딩

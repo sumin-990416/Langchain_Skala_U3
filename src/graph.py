@@ -1,134 +1,59 @@
-from typing import Literal
-from langgraph.graph import StateGraph, START, END
-from langgraph.constants import Send
+"""Orchestrator-Workers: 계획 → 동적 fan-out → 집계 → 품질 평가 → 제한 재작업."""
 
-from src.schemas import InvestmentAgentState
-from src.nodes.core import (
-    load_inputs,
-    select_company,
-    build_questions,
-    retrieve_evidence,
-    validate_evidence,
-    rewrite_query,
-    record_unknown,
-    score_common,
-    synthesize_company,
-    save_company_result,
-    compare_companies,
-    generate_report,
-    validate_report
-)
-from src.agents.profile import profile_agent_node, get_all_profiles
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Send
 
-def route_evidence_check(state: InvestmentAgentState) -> Literal["score_common", "rewrite_query", "record_unknown"]:
-    """
-    근거 충분 여부를 판단하여 라우팅합니다.
-    (현재는 임시로 모두 통과한다고 가정)
-    """
-    is_sufficient = True 
-    if is_sufficient:
-        return "score_common"
-    else:
-        # 질문별 재검색 횟수 확인 (여기선 단순화)
-        total_retry = sum(state.get("retry_count", {}).values())
-        if total_retry < 2:
-            return "rewrite_query"
-        else:
-            return "record_unknown"
+from src.orchestration.finalize import finalize_node
+from src.orchestration.planner import initialize_node, orchestrator_node
+from src.orchestration.quality import evaluate_report_node
+from src.orchestration.reporting import generate_report_node, synthesizer_node
+from src.orchestration.schemas import OrchestratorState
+from src.orchestration.worker import worker_node
 
-def route_to_profiles(state: InvestmentAgentState):
-    """공통 점수 후 5개 프로필 에이전트를 병렬 실행합니다."""
-    return [
-        Send("profile_agent", {
-            "profile_name": p,
-            "domain_scores": state.get("domain_scores", {}),
-            "validated_evidence": state.get("validated_evidence", []),
-            "current_company": state.get("current_company")
-        })
-        for p in get_all_profiles()
-    ]
 
-def route_next_company(state: InvestmentAgentState) -> Literal["select_company", "compare_companies"]:
-    """남은 기업이 있는지 확인합니다."""
-    idx = state.get("current_index", 0)
-    companies = state.get("selected_companies", [])
-    if idx < len(companies):
-        return "select_company"
-    else:
-        return "compare_companies"
+def route_to_workers(state: OrchestratorState):
+    """Workers의 수와 입력은 사전에 저장된 plan에서만 결정한다."""
+    if not state.get("plan"):
+        raise ValueError("Worker 실행 전에 구조화 계획이 필요합니다.")
+    return [Send("worker", {
+        "task": task,
+        "trace_id": state["trace_id"], "output_dir": state["output_dir"],
+        "execution_mode": state["execution_mode"],
+        "generator_model": state["generator_model"],
+        "max_worker_attempts": state["max_worker_attempts"],
+        "plan_revision": state["plan_revision"],
+        "retrieval_mode": state.get("retrieval_mode", "faiss"),
+    }) for task in state["plan"]]
 
-def route_report_validation(state: InvestmentAgentState) -> str:
-    """검증 오류는 결과에 남기고 종료하여 무한 재생성 루프를 방지합니다."""
-    return END
 
-def build_graph() -> StateGraph:
-    workflow = StateGraph(InvestmentAgentState)
+def route_after_quality(state: OrchestratorState) -> str:
+    if state["eval_result"].passed:
+        return "finalize"
+    if (state["quality_retry_count"] >= state["max_quality_retries"]
+            or state["step_count"] + 5 >= state["max_steps"]):
+        return "finalize"
+    return "orchestrator"
 
-    # 1. 노드 등록
-    workflow.add_node("load_inputs", load_inputs)
-    workflow.add_node("select_company", select_company)
-    workflow.add_node("build_questions", build_questions)
-    workflow.add_node("retrieve_evidence", retrieve_evidence)
-    workflow.add_node("validate_evidence", validate_evidence)
-    workflow.add_node("rewrite_query", rewrite_query)
-    workflow.add_node("record_unknown", record_unknown)
-    workflow.add_node("score_common", score_common)
-    workflow.add_node("profile_agent", profile_agent_node)
-    workflow.add_node("synthesize_company", synthesize_company)
-    workflow.add_node("save_company_result", save_company_result)
-    workflow.add_node("compare_companies", compare_companies)
-    workflow.add_node("generate_report", generate_report)
-    workflow.add_node("validate_report", validate_report)
 
-    # 2. 엣지 연결
-    workflow.set_entry_point("load_inputs")
-    workflow.add_edge("load_inputs", "select_company")
-    workflow.add_edge("select_company", "build_questions")
-    workflow.add_edge("build_questions", "retrieve_evidence")
-    workflow.add_edge("retrieve_evidence", "validate_evidence")
+def build_graph(checkpointer=None, interrupt_before=None):
+    workflow = StateGraph(OrchestratorState)
+    for name, node in [
+        ("initialize", initialize_node), ("orchestrator", orchestrator_node),
+        ("worker", worker_node), ("synthesizer", synthesizer_node),
+        ("generate_report", generate_report_node),
+        ("evaluate_report", evaluate_report_node), ("finalize", finalize_node),
+    ]:
+        workflow.add_node(name, node)
+    workflow.add_edge(START, "initialize")
+    workflow.add_edge("initialize", "orchestrator")
+    workflow.add_conditional_edges("orchestrator", route_to_workers, ["worker"])
+    workflow.add_edge("worker", "synthesizer")
+    workflow.add_edge("synthesizer", "generate_report")
+    workflow.add_edge("generate_report", "evaluate_report")
+    workflow.add_conditional_edges("evaluate_report", route_after_quality,
+                                   {"orchestrator": "orchestrator", "finalize": "finalize"})
+    workflow.add_edge("finalize", END)
+    return workflow.compile(checkpointer=checkpointer, interrupt_before=interrupt_before)
 
-    # 조건부 엣지: 근거 충분?
-    workflow.add_conditional_edges(
-        "validate_evidence",
-        route_evidence_check,
-        {
-            "score_common": "score_common",
-            "rewrite_query": "rewrite_query",
-            "record_unknown": "record_unknown"
-        }
-    )
-
-    workflow.add_edge("rewrite_query", "retrieve_evidence")
-    workflow.add_edge("record_unknown", "score_common")
-
-    # 병렬 에이전트 실행
-    workflow.add_conditional_edges("score_common", route_to_profiles, ["profile_agent"])
-    workflow.add_edge("profile_agent", "synthesize_company")
-    
-    workflow.add_edge("synthesize_company", "save_company_result")
-
-    # 조건부 엣지: 남은 기업?
-    workflow.add_conditional_edges(
-        "save_company_result",
-        route_next_company,
-        {
-            "select_company": "select_company",
-            "compare_companies": "compare_companies"
-        }
-    )
-
-    workflow.add_edge("compare_companies", "generate_report")
-    workflow.add_edge("generate_report", "validate_report")
-
-    # 조건부 엣지: 보고서 검증 오류?
-    workflow.add_conditional_edges(
-        "validate_report",
-        route_report_validation,
-        {
-            END: END
-        }
-    )
-
-    return workflow.compile()
 
 graph = build_graph()

@@ -1,7 +1,7 @@
 [project]
 name = "capstone-v1"
 version = "0.1.0"
-description = "Add your description here"
+description = "LangGraph Orchestrator-Workers based neutral battery AI assessment"
 readme = "README.md"
 authors = [
     { name = "정수민", email = "jsm990416@gmail.com" }
@@ -13,24 +13,32 @@ dependencies = [
     "jinja2>=3.1.6",
     "jupyter>=1.1.1",
     "langchain>=1.4.3",
+    "langchain-community>=0.4.1",
     "langchain-anthropic>=1.7.4",
     "langchain-openai>=1.6.6",
     "langchain-tavily>=0.2.18",
+    "langchain-text-splitters>=1.1.0",
     "langgraph>=1.2.12",
+    "langgraph-checkpoint-sqlite>=3.1.0",
     "matplotlib>=3.11.2",
     "pydantic>=2.13.5",
     "pypdf>=6.19.0",
     "python-dotenv>=1.2.3",
     "pyyaml>=6.0.3",
     "ragas>=0.4.3",
+    "reportlab>=4.4.0",
     "rich>=14.3.4",
     "sentence-transformers>=6.1.0",
     "weasyprint>=70.0",
 ]
 
 [project.scripts]
-capstone-v1 = "capstone_v1:main"
+capstone-v1 = "src.cli:main"
 
 [build-system]
 requires = ["uv_build>=0.12.13,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "src"
+module-root = ""
