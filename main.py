@@ -145,6 +145,7 @@ def main():
         unknown_items=[],
         domain_scores={},
         profile_task_plan=[],
+        profile_task_statuses={},
         profile_results=[],
         report_evidence=[],
         report_quality_verdict=None,
@@ -187,13 +188,23 @@ def main():
                         console.print(f"\n🎯 [bold yellow]타겟 기업 설정됨:[/bold yellow] {c.name}")
                         
                 elif node_name.startswith("worker_"):
-                    console.print(f" ➔ 👥 {node_name} 평가 완료")
+                    statuses = node_state.get("profile_task_statuses", {})
+                    status = next(iter(statuses.values()), None)
+                    outcome = "실패" if status and status["status"] == "failed" else "성공"
+                    console.print(f" ➔ 👥 {node_name} 평가 {outcome}")
                     progress.update(task_id, description=f"[cyan]다중 관점 평가 종합 중...[/cyan]")
 
                 elif node_name == "orchestrator_plan_workers":
                     tasks = node_state.get("profile_task_plan", [])
                     console.print(
                         f" ➔ 🧭 Orchestrator가 {len(tasks)}개 Worker 작업을 계획"
+                    )
+
+                elif node_name == "orchestrator_dispatch_workers":
+                    statuses = node_state.get("profile_task_statuses", {})
+                    console.print(
+                        f" ➔ 🚦 Worker 상태 갱신: "
+                        f"{sum(item['status'] == 'running' for item in statuses.values())}개 실행 중"
                     )
 
                 elif node_name == "plan_report_review":

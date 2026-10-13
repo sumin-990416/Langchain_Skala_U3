@@ -103,6 +103,15 @@ class ProfileTask(TypedDict):
     focus: str
 
 
+class ProfileTaskStatus(TypedDict):
+    task_id: str
+    company_name: str
+    profile_name: str
+    status: Literal["pending", "running", "succeeded", "failed"]
+    attempts: int
+    error_message: str
+
+
 class ReportReviewTask(TypedDict):
     task_id: str
     company_name: str
@@ -159,6 +168,14 @@ def reset_or_add_corrections(
     return left + right
 
 
+def merge_profile_task_statuses(
+    left: Dict[str, ProfileTaskStatus],
+    right: Dict[str, ProfileTaskStatus],
+) -> Dict[str, ProfileTaskStatus]:
+    """Merge disjoint parallel worker updates, letting newer status replace older."""
+    return {**left, **right}
+
+
 class InvestmentAgentState(TypedDict):
     selected_companies: List[Company]
     current_index: int
@@ -174,6 +191,9 @@ class InvestmentAgentState(TypedDict):
     
     domain_scores: Dict[Domain, float]
     profile_task_plan: List[ProfileTask]
+    profile_task_statuses: Annotated[
+        Dict[str, ProfileTaskStatus], merge_profile_task_statuses
+    ]
     profile_results: Annotated[List[ProfileResult], reset_or_add]
     report_evidence: Annotated[List[ReportEvidence], operator.add]
     report_quality_verdict: Optional[ReportQualityVerdict]

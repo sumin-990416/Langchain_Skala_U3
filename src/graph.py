@@ -18,7 +18,11 @@ from src.nodes.core import (
     generate_report,
     validate_report
 )
-from src.agents.profile import profile_agent_node, plan_profile_tasks
+from src.agents.profile import (
+    dispatch_profile_tasks,
+    plan_profile_tasks,
+    profile_agent_node,
+)
 from src.nodes.report_quality import (
     evaluate_report_quality,
     plan_report_review,
@@ -75,8 +79,14 @@ def route_to_profiles(state: InvestmentAgentState):
             raise ValueError(
                 f"프로필 Worker 노드가 등록되지 않았습니다: {task['profile_name']}"
             )
+        attempt_count = next(
+            status["attempts"]
+            for status in state["profile_task_statuses"].values()
+            if status["task_id"] == task["task_id"]
+        )
         sends.append(Send(worker_node, {
             "task_id": task["task_id"],
+            "attempts": attempt_count,
             "profile_name": task["profile_name"],
             "domain_scores": state.get("domain_scores", {}),
             "validated_evidence": state.get("validated_evidence", []),
@@ -149,6 +159,7 @@ def build_graph() -> StateGraph:
     workflow.add_node("record_unknown", record_unknown)
     workflow.add_node("score_common", score_common)
     workflow.add_node("orchestrator_plan_workers", plan_profile_tasks)
+    workflow.add_node("orchestrator_dispatch_workers", dispatch_profile_tasks)
     for worker_node in set(PROFILE_WORKER_NODES.values()):
         workflow.add_node(worker_node, profile_agent_node)
     workflow.add_node("synthesizer_aggregate_company", synthesize_company)
@@ -186,8 +197,9 @@ def build_graph() -> StateGraph:
     # Plan first, then dynamically fan out only the tasks stored in State.
     worker_nodes = sorted(set(PROFILE_WORKER_NODES.values()))
     workflow.add_edge("score_common", "orchestrator_plan_workers")
+    workflow.add_edge("orchestrator_plan_workers", "orchestrator_dispatch_workers")
     workflow.add_conditional_edges(
-        "orchestrator_plan_workers",
+        "orchestrator_dispatch_workers",
         route_to_profiles,
         worker_nodes,
     )

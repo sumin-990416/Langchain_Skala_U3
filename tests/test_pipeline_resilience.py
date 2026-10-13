@@ -3,7 +3,12 @@ from unittest.mock import patch
 from pathlib import Path
 
 from pypdf import PdfReader
-from src.agents.profile import get_all_profiles, plan_profile_tasks, profile_agent_node
+from src.agents.profile import (
+    dispatch_profile_tasks,
+    get_all_profiles,
+    plan_profile_tasks,
+    profile_agent_node,
+)
 from src.graph import (
     PROFILE_WORKER_NODES,
     build_graph,
@@ -36,6 +41,7 @@ from src.schemas import (
     ReportQualityFinding,
     ReportQualityVerdict,
     ResultCategory,
+    merge_profile_task_statuses,
 )
 
 
@@ -118,6 +124,39 @@ class PipelineResilienceTest(unittest.TestCase):
         self.assertTrue(all(task["task_id"].startswith("계획 대상 기업:") for task in tasks))
         self.assertTrue(all(task["focus"] for task in tasks))
         self.assertEqual(plan["profile_results"], [])
+        self.assertEqual(
+            {status["status"] for status in plan["profile_task_statuses"].values()},
+            {"pending"},
+        )
+        self.assertEqual(len(plan["profile_task_statuses"]), 5)
+
+        running = dispatch_profile_tasks({
+            "current_company": Company(name="계획 대상 기업"),
+            "profile_task_plan": tasks,
+            "profile_task_statuses": plan["profile_task_statuses"],
+        })["profile_task_statuses"]
+        self.assertEqual({status["status"] for status in running.values()}, {"running"})
+        self.assertEqual({status["attempts"] for status in running.values()}, {1})
+
+        one_done = {
+            "technology_focused": {
+                **running["technology_focused"],
+                "status": "succeeded",
+            }
+        }
+        another_done = {
+            "balanced": {
+                **running["balanced"],
+                "status": "failed",
+                "error_message": "모델 연결 실패",
+            }
+        }
+        merged = merge_profile_task_statuses(
+            merge_profile_task_statuses(running, one_done), another_done
+        )
+        self.assertEqual(merged["technology_focused"]["status"], "succeeded")
+        self.assertEqual(merged["balanced"]["status"], "failed")
+        self.assertEqual(len(merged), 5)
 
     def test_worker_fanout_uses_only_tasks_in_the_orchestrator_plan(self):
         task = {
@@ -127,6 +166,16 @@ class PipelineResilienceTest(unittest.TestCase):
         }
         sends = route_to_profiles({
             "profile_task_plan": [task],
+            "profile_task_statuses": {
+                "balanced": {
+                    "task_id": task["task_id"],
+                    "company_name": "기업A",
+                    "profile_name": "균형형",
+                    "status": "running",
+                    "attempts": 1,
+                    "error_message": "",
+                }
+            },
             "domain_scores": DOMAIN_SCORES,
             "validated_evidence": [],
             "current_company": Company(name="기업A"),
@@ -135,6 +184,7 @@ class PipelineResilienceTest(unittest.TestCase):
         self.assertEqual(len(sends), 1)
         self.assertEqual(sends[0].node, "worker_균형형")
         self.assertEqual(sends[0].arg["task_id"], task["task_id"])
+        self.assertEqual(sends[0].arg["attempts"], 1)
         self.assertEqual(sends[0].arg["profile_name"], task["profile_name"])
 
     def test_langgraph_trace_exposes_orchestrator_and_named_profile_workers(self):
@@ -142,6 +192,7 @@ class PipelineResilienceTest(unittest.TestCase):
         nodes = set(workflow.nodes)
 
         self.assertIn("orchestrator_plan_workers", nodes)
+        self.assertIn("orchestrator_dispatch_workers", nodes)
         self.assertIn("synthesizer_aggregate_company", nodes)
         self.assertEqual(
             {node for node in nodes if node.startswith("worker_")},
@@ -373,23 +424,32 @@ class PipelineResilienceTest(unittest.TestCase):
         }
         for profile_id in get_all_profiles():
             with self.subTest(profile_id=profile_id):
-                result = profile_agent_node({**state, "profile_name": profile_id})["profile_results"][0]
+                output = profile_agent_node({**state, "profile_name": profile_id})
+                result = output["profile_results"][0]
                 self.assertIsNone(result.weighted_score)
                 self.assertEqual(result.decision, FinalDecision.HOLD_RAG)
+                self.assertEqual(
+                    next(iter(output["profile_task_statuses"].values()))["status"],
+                    "succeeded",
+                )
                 self.assertIn(
                     result.result_category,
                     {ResultCategory.INSUFFICIENT_EVIDENCE, ResultCategory.PARTIAL_EVIDENCE},
                 )
 
     def test_agent_error_is_structured_and_nonblocking(self):
-        result = profile_agent_node({
+        output = profile_agent_node({
             "task_id": "기업A:broken-profile",
             "profile_name": "broken-profile",
             "domain_scores": DOMAIN_SCORES,
             "validated_evidence": [],
             "current_company": Company(name="연결 오류 기업"),
-        })["profile_results"][0]
+        })
+        result = output["profile_results"][0]
         self.assertEqual(result.result_category, ResultCategory.EXECUTION_ERROR)
+        self.assertEqual(
+            output["profile_task_statuses"]["broken-profile"]["status"], "failed"
+        )
         self.assertIsNone(result.weighted_score)
         self.assertTrue(result.error_message)
         self.assertEqual(result.task_id, "기업A:broken-profile")

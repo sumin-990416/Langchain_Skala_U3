@@ -100,15 +100,16 @@ flowchart TD
     EVIDENCE_ROUTE -.->|"재시도 상한 초과 시"| UNKNOWN["record_unknown<br/>미확인 항목 기록"]
     UNKNOWN -.-> SCORE
 
-    SCORE --> ORCH["orchestrator_plan_workers<br/>프로필 작업 계획을 State에 기록"]
-    ORCH --> FANOUT{"계획에 따라<br/>동적 Send fan-out"}
+    SCORE --> ORCH["orchestrator_plan_workers<br/>프로필 작업 계획과 pending 상태 기록"]
+    ORCH --> DISPATCH["orchestrator_dispatch_workers<br/>상태를 running으로 갱신"]
+    DISPATCH --> FANOUT{"계획에 따라<br/>동적 Send fan-out"}
     FANOUT --> TECH["worker_기술중심형"]
     FANOUT --> STABLE["worker_안정형"]
     FANOUT --> GROWTH["worker_성장형"]
     FANOUT --> BALANCED["worker_균형형"]
     FANOUT --> BUSINESS["worker_사업성중심형"]
 
-    TECH --> SYNTH["synthesizer_aggregate_company<br/>Worker 결과 집계"]
+    TECH --> SYNTH["synthesizer_aggregate_company<br/>Worker 결과·succeeded/failed 상태 집계"]
     STABLE --> SYNTH
     GROWTH --> SYNTH
     BALANCED --> SYNTH
@@ -218,11 +219,25 @@ growth_evaluation = (
 [`src/schemas.py`](src/schemas.py)의 State는 전체 Graph가 공유하는 데이터 계약입니다.
 
 ```python
+class ProfileTaskStatus(TypedDict):
+    task_id: str
+    company_name: str
+    profile_name: str
+    status: Literal["pending", "running", "succeeded", "failed"]
+    attempts: int
+    error_message: str
+
+def merge_profile_task_statuses(left, right):
+    return {**left, **right}
+
 class InvestmentAgentState(TypedDict):
     current_company: Optional[Company]
     validated_evidence: List[Evidence]
     domain_scores: Dict[Domain, float]
     profile_task_plan: List[ProfileTask]
+    profile_task_statuses: Annotated[
+        Dict[str, ProfileTaskStatus], merge_profile_task_statuses
+    ]
     profile_results: Annotated[List[ProfileResult], reset_or_add]
     report_evidence: Annotated[List[ReportEvidence], operator.add]
     report_quality_verdict: Optional[ReportQualityVerdict]
@@ -235,11 +250,13 @@ class InvestmentAgentState(TypedDict):
     final_comparison: Optional[ComparisonResult]
 ```
 
-각 노드는 전체 객체를 직접 수정하지 않고 필요한 필드만 반환합니다. Orchestrator는 설정된 프로필을 구조화된 `profile_task_plan`으로 State에 기록한 뒤, Worker 결과를 `profile_results` reducer가 하나의 리스트로 합칩니다. 계획 노드에서 결과 리스트를 초기화하므로 기업별 결과가 섞이지 않습니다.
+각 노드는 전체 객체를 직접 수정하지 않고 필요한 필드만 반환합니다. Orchestrator는 설정된 프로필을 구조화된 `profile_task_plan`과 `pending` 상태로 State에 기록합니다. `orchestrator_dispatch_workers`가 Fan-out 전에 상태를 `running`으로 바꾸고, Worker는 종료 시 `succeeded` 또는 `failed`로 기록합니다. 각 상태에는 task ID, 기업·프로필, 시도 횟수 및 비민감 오류 요약이 포함됩니다.
 
-Worker 실패는 **계속 진행(Continue)** 으로 처리합니다. 실패한 Worker도 `task_id`, `EXECUTION_ERROR`, 오류 요약을 포함한 구조화 결과를 반환하며, 다른 Worker 결과의 종합은 계속됩니다. 실패 Worker는 유효 점수에서 제외되고 최종 결과에는 평가 오류와 판단 유보가 표시됩니다.
+상태 reducer는 프로필 ID별로 결과를 병합하므로 병렬 Worker의 서로 다른 상태 업데이트가 유실되지 않습니다. State에는 현재 기업의 다섯 프로필 상태만 보관해 실행 횟수에 비례해 커지지 않도록 했습니다. LangSmith trace는 노드 실행 이력과 시간을 보관하고, State 상태는 그래프 중단 시 작업별 최종 결과와 실패 요약을 확인하는 용도입니다.
 
-상태는 실행 제어와 평가 페이로드를 구분합니다. `profile_task_plan`, 품질 verdict, `quality_retry_count`, `trace_id`는 라우팅·종료·재개에 쓰고, 보고서 Judge가 필요로 하는 출처 발췌만 회사별 최대 60개, 발췌당 800자로 제한해 `report_evidence`에 보관합니다. 판단 사유는 verdict finding에 남겨 `trace_id`와 함께 실행 결과에서 추적할 수 있습니다. 병렬 Worker 결과는 `profile_results`와 `report_corrections`의 reducer로 병합합니다.
+Worker 실패는 **계속 진행(Continue)** 으로 처리합니다. 실패한 Worker도 `task_id`, `EXECUTION_ERROR`, 오류 요약을 포함한 구조화 결과를 반환하며, 해당 작업 상태는 `failed`가 되고 다른 Worker 결과 종합은 계속됩니다. 근거 부족으로 점수를 산출하지 못했더라도 실행 자체가 정상이라면 작업 상태는 `succeeded`이며, 결과 판정은 `ProfileResult.result_category`에서 별도로 `INSUFFICIENT_EVIDENCE` 또는 `PARTIAL_EVIDENCE`로 표현합니다. 이렇게 실행 성공 여부와 평가 결과의 충분도를 구분합니다.
+
+상태는 실행 제어와 평가 페이로드를 구분합니다. `profile_task_plan`, `profile_task_statuses`, 품질 verdict, `quality_retry_count`, `trace_id`는 라우팅·종료·재개에 쓰고, 보고서 Judge가 필요로 하는 출처 발췌만 회사별 최대 60개, 발췌당 800자로 제한해 `report_evidence`에 보관합니다. 판단 사유는 verdict finding에 남겨 `trace_id`와 함께 실행 결과에서 추적할 수 있습니다. 병렬 Worker 결과는 `profile_results`, `profile_task_statuses`, `report_corrections`의 reducer로 병합합니다.
 
 #### 2. 계획 기반 동적 Fan-out
 
@@ -247,8 +264,12 @@ Worker 실패는 **계속 진행(Continue)** 으로 처리합니다. 실패한 W
 
 ```python
 workflow.add_edge("score_common", "orchestrator_plan_workers")
-workflow.add_conditional_edges(
+workflow.add_edge(
     "orchestrator_plan_workers",
+    "orchestrator_dispatch_workers",
+)
+workflow.add_conditional_edges(
+    "orchestrator_dispatch_workers",
     route_to_profiles,
     [
         "worker_기술중심형",
@@ -271,6 +292,11 @@ def route_to_profiles(state: InvestmentAgentState):
     return [
         Send(worker_nodes[task["profile_name"]], {
             "task_id": task["task_id"],
+            "attempts": next(
+                status["attempts"]
+                for status in state["profile_task_statuses"].values()
+                if status["task_id"] == task["task_id"]
+            ),
             "profile_name": task["profile_name"],
             "domain_scores": state.get("domain_scores", {}),
             "validated_evidence": state.get("validated_evidence", []),
@@ -284,22 +310,11 @@ for worker_node in worker_nodes.values():
 ```
 
 Orchestrator가 설정에서 작업을 구성하고 난 뒤 Fan-out이 시작됩니다. 라우터는 프로필 목록을 직접 결정하지 않고 State의 계획만 사용하므로, 계획된 작업 수와 대상에 따라 Worker 실행이 달라집니다. 각 Worker에는 공통 점수, 검증 근거, 기업 정보와 상관을 위한 `task_id`를 전달하며, 결과는 reducer로 모입니다.
+작업 상태는 계획 시 `pending`, fan-out 직전 `running`, Worker 종료 시 `succeeded` 또는 `failed`로 전이합니다. `profile_task_statuses`는 프로필 키를 사용해 병렬 업데이트를 reducer로 합치고, 현재 기업의 최대 5개 항목만 보관합니다.
 
 #### 3. 조건 분기와 기업 반복
 
 ```python
-workflow.add_conditional_edges(
-    "orchestrator_plan_workers",
-    route_to_profiles,
-    [
-        "worker_기술중심형",
-        "worker_안정형",
-        "worker_성장형",
-        "worker_균형형",
-        "worker_사업성중심형",
-    ],
-)
-
 workflow.add_conditional_edges(
     "save_company_result",
     route_next_company,

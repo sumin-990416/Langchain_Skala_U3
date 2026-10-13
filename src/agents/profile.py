@@ -6,7 +6,14 @@ from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.schemas import FinalDecision, ProfileResult, ProfileTask, Domain, ResultCategory
+from src.schemas import (
+    FinalDecision,
+    ProfileResult,
+    ProfileTask,
+    ProfileTaskStatus,
+    Domain,
+    ResultCategory,
+)
 
 # 설정·그래프에서는 영문 ID를, 기존 담당자별 코드에서는 한글명을 사용합니다.
 # 두 표기를 여기서만 연결해 설정 조회와 에이전트 분기가 같은 기준을 따릅니다.
@@ -28,6 +35,7 @@ def _canonical_profile_id(profile_id: str) -> str:
 
 class ProfileSendState(TypedDict):
     task_id: NotRequired[str]
+    attempts: NotRequired[int]
     profile_name: str
     domain_scores: Dict[Domain, float]
     validated_evidence: List[Any]
@@ -36,6 +44,12 @@ class ProfileSendState(TypedDict):
 
 class ProfilePlanState(TypedDict):
     current_company: Any
+
+
+class ProfileTaskState(TypedDict):
+    current_company: Any
+    profile_task_plan: List[ProfileTask]
+    profile_task_statuses: Dict[str, ProfileTaskStatus]
 
 
 def get_all_profiles() -> List[str]:
@@ -53,15 +67,44 @@ def plan_profile_tasks(state: ProfilePlanState) -> Dict[str, Any]:
     company = state.get("current_company")
     company_name = company.name if company else "unknown-company"
     tasks: List[ProfileTask] = []
+    statuses: Dict[str, ProfileTaskStatus] = {}
     for profile_name in get_all_profiles():
         config = load_profile_config(profile_name)
-        task_id = f"{company_name}:{_canonical_profile_id(profile_name)}"
+        profile_id = _canonical_profile_id(profile_name)
+        task_id = f"{company_name}:{profile_id}"
         tasks.append({
             "task_id": task_id,
             "profile_name": profile_name,
             "focus": config["focus"],
         })
-    return {"profile_task_plan": tasks, "profile_results": []}
+        statuses[profile_id] = {
+            "task_id": task_id,
+            "company_name": company_name,
+            "profile_name": config["name"],
+            "status": "pending",
+            "attempts": 0,
+            "error_message": "",
+        }
+    return {
+        "profile_task_plan": tasks,
+        "profile_task_statuses": statuses,
+        "profile_results": [],
+    }
+
+
+def dispatch_profile_tasks(state: ProfileTaskState) -> Dict[str, Any]:
+    """Persist the running state before LangGraph fans tasks out to workers."""
+    statuses = {}
+    for task in state.get("profile_task_plan", []):
+        profile_id = _canonical_profile_id(task["profile_name"])
+        current = state["profile_task_statuses"][profile_id]
+        statuses[profile_id] = {
+            **current,
+            "status": "running",
+            "attempts": current["attempts"] + 1,
+            "error_message": "",
+        }
+    return {"profile_task_statuses": statuses}
 
 
 class DomainContributions(BaseModel):
@@ -169,5 +212,23 @@ def profile_agent_node(state: ProfileSendState) -> Dict[str, Any]:
     if task_id:
         result = result.model_copy(update={"task_id": task_id})
 
+    task_status: ProfileTaskStatus = {
+        "task_id": task_id,
+        "company_name": (
+            state["current_company"].name if state.get("current_company") else "unknown-company"
+        ),
+        "profile_name": result.profile_name,
+        "status": (
+            "failed"
+            if result.result_category == ResultCategory.EXECUTION_ERROR
+            else "succeeded"
+        ),
+        "attempts": state.get("attempts", 1),
+        "error_message": result.error_message,
+    }
+
     # Reducer (`operator.add`)를 통해 graph state 배열에 자동 누적됨
-    return {"profile_results": [result]}
+    return {
+        "profile_results": [result],
+        "profile_task_statuses": {profile_id: task_status},
+    }
