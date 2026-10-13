@@ -12,7 +12,7 @@
 1. 평가에 사용할 근거를 먼저 수집합니다.
 2. 공통 기준과 투자자 유형별 기준을 분리해 평가합니다.
 3. 근거가 부족하면 억지로 점수를 만들지 않고 `판단 유보`로 남깁니다.
-4. 최종 결과를 5페이지 이내의 차트 포함 PDF로 출력합니다.
+4. 최종 결과를 SUMMARY와 실제 인용자료 REFERENCE를 포함한 최대 10페이지 PDF로 출력합니다.
 
 ---
 
@@ -380,7 +380,7 @@ class ProfileResult(BaseModel):
 3. 일부 Agent만 산출된 평균은 **참고 평균**으로 표시합니다.
 4. 근거가 부족한 Agent와 핵심 항목을 별도 카테고리로 보여줍니다.
 5. 추가로 받아야 할 매출, ARR, 계약, 성능 검증 원자료를 실사 질문으로 연결합니다.
-6. 5페이지 이내의 차트 포함 PDF로 핵심 결과를 압축합니다.
+6. SUMMARY를 핵심 투자결론 중심으로 반 페이지 이내에 두고, 마지막에 실제 인용자료의 REFERENCE를 둡니다.
 
 > 점수가 높아 보이는 것보다, 어떤 근거로 그 점수가 만들어졌고 무엇을 아직 모르는지 보여주는 것이 더 중요합니다.
 
@@ -400,7 +400,7 @@ src/agents/profile.py            5개 Agent 라우팅
 src/agents/profiles/             Agent별 독립 30% 평가
 src/agents/profiles/_evidence.py 공통 근거 충족 검사
 src/nodes/core.py                검색, 공통 평가, 종합, 보고서 노드
-src/report_generator.py          차트와 PDF 생성
+src/report_generator.py          요약·출처 참조 연결과 PDF 페이지 검증
 src/templates/report.html        PDF 보고서 템플릿
 output/                          최종 Markdown/PDF 보고서
 ```
@@ -414,7 +414,7 @@ uv sync
 uv run python main.py
 ```
 
-프로젝트 루트의 `.env`에는 `OPENAI_API_KEY`가 필요합니다. 기존 `data/raw` 문서를 그대로 사용할 경우 파일 선택 질문에 `n`을 입력합니다.
+프로젝트 루트의 `.env`에는 `OPENAI_API_KEY`가 필요합니다. LangSmith 추적에는 `LANGCHAIN_TRACING_V2=true`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`를 설정합니다. Graph 실행은 `battery-startup-investment-report` run name과 State의 `trace_id` 메타데이터로 검색할 수 있습니다. OpenAI 사전 연결 확인 run은 그래프 전체 실행과 별도로 표시됩니다. 기존 `data/raw` 문서를 그대로 사용할 경우 파일 선택 질문에 `n`을 입력합니다.
 
 ```text
 output/final_multi_agent_report.md
@@ -433,13 +433,13 @@ output/final_report.pdf
 - 공통 70% + 유형별 30% 결합
 - 근거 부족 시 점수 미산출 및 판단 유보
 - 판단 유보를 포함한 기업 종합
-- Markdown 및 차트 포함 PDF 보고서 생성
+- SUMMARY·실제 인용자료 REFERENCE가 포함된 Markdown 및 PDF 보고서 생성
 
 ### 추가 개선
 
 - 현재 임시 공통 영역점수를 실제 근거 기반 항목별 채점으로 교체
 - 공통 근거 검증 결과에 따른 질의 재작성·재검색 루프 완성
-- 출처 URL·페이지·claim ID를 보고서까지 연결
+- claim 단위 인용·PDF 페이지 위치를 보고서까지 연결
 - Agent별 산식과 임계값에 대한 평가 데이터 구축
 - 전체 Graph와 PDF 결과에 대한 자동화 테스트 추가
 

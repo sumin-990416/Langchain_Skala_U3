@@ -2,8 +2,9 @@ import unittest
 from unittest.mock import patch
 from pathlib import Path
 
+from pypdf import PdfReader
 from src.agents.profile import get_all_profiles, plan_profile_tasks, profile_agent_node
-from src.graph import route_report_quality, route_to_profiles
+from src.graph import build_graph_run_config, route_report_quality, route_to_profiles
 from src.nodes.report_quality import (
     _rule_checks,
     evaluate_report_quality,
@@ -12,7 +13,11 @@ from src.nodes.report_quality import (
     synthesize_report_corrections,
 )
 from src.nodes.core import compare_companies, save_company_result, synthesize_company
-from src.report_generator import generate_pdf_report
+from src.report_generator import (
+    build_report_summary,
+    collect_reference_entries,
+    generate_pdf_report,
+)
 from src.schemas import (
     Company,
     ComparisonResult,
@@ -54,6 +59,51 @@ def make_profile(
 
 
 class PipelineResilienceTest(unittest.TestCase):
+    def test_graph_run_config_has_searchable_run_name_and_trace_correlation(self):
+        config = build_graph_run_config("trace-for-test")
+
+        self.assertEqual(config["run_name"], "battery-startup-investment-report")
+        self.assertIn("langgraph", config["tags"])
+        self.assertEqual(config["metadata"]["trace_id"], "trace-for-test")
+
+    def test_report_summary_is_a_concise_conclusion(self):
+        profile = make_profile(
+            "기술중심형", None, ResultCategory.INSUFFICIENT_EVIDENCE, 0,
+            FinalDecision.HOLD_RAG,
+        )
+        company = synthesize_company({
+            "profile_results": [profile],
+            "domain_scores": DOMAIN_SCORES,
+            "evidence_coverage": 0.0,
+            "current_company": Company(name="기업A"),
+        })["company_result"]
+
+        summary = build_report_summary([company])
+
+        self.assertIn("우선 투자 대상을 선정하지 않았으며", summary)
+        self.assertIn("기업A", summary)
+        self.assertLess(len(summary), 300)
+
+    def test_references_resolve_only_cited_card_and_page_alias(self):
+        raw_dir = Path(__file__).parent.parent / "data" / "raw"
+
+        references = collect_reference_entries(
+            ["A-01", "A01", "E-03", "BESS_RAG_Source_Pack:p16"], raw_dir=raw_dir
+        )
+        entries = [entry for group in references.values() for entry in group]
+
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(any("Battery Analytics Platform" in entry["citation"] for entry in entries))
+        self.assertTrue(any("ELECTRA AI" in entry["citation"] for entry in entries))
+        self.assertEqual(
+            {
+                source_id
+                for entry in entries
+                for source_id in entry["requested_ids"]
+            },
+            {"A-01", "A01", "E-03", "BESS_RAG_Source_Pack:p16"},
+        )
+
     def test_orchestrator_creates_structured_profile_tasks_from_configuration(self):
         plan = plan_profile_tasks({"current_company": Company(name="계획 대상 기업")})
         tasks = plan["profile_task_plan"]
@@ -348,7 +398,7 @@ class PipelineResilienceTest(unittest.TestCase):
         self.assertEqual(len(header_cells), len(row_cells))
         self.assertIn("일부 근거 부족", lines[2])
 
-    def test_five_page_pdf_supports_hold_and_error_categories(self):
+    def test_pdf_respects_page_limit_and_supports_hold_and_error_categories(self):
         company_specs = [
             ("ACCURE", [
                 make_profile("기술중심형", 79, ResultCategory.COMPLETE, 90),
@@ -386,9 +436,20 @@ class PipelineResilienceTest(unittest.TestCase):
         ]
         comparison = compare_companies({"company_results": companies})["final_comparison"]
         output_path = Path("tmp/pdfs/test-hold-output.pdf").resolve()
-        generated = Path(generate_pdf_report(comparison, output_path))
+        generated = Path(
+            generate_pdf_report(
+                comparison,
+                output_path,
+                report_summary="테스트 요약: 공개 근거만으로 판단을 확정하기 어렵다.",
+            )
+        )
         self.assertTrue(generated.exists())
         self.assertGreater(generated.stat().st_size, 0)
+        pages = PdfReader(str(generated)).pages
+        self.assertLessEqual(len(pages), 10)
+        self.assertIn("SUMMARY", pages[0].extract_text() or "")
+        self.assertIn("테스트 요약", pages[0].extract_text() or "")
+        self.assertIn("REFERENCE", pages[-1].extract_text() or "")
 
     def test_pdf_is_created_when_every_profile_is_on_hold(self):
         profiles = [

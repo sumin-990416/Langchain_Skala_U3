@@ -8,6 +8,8 @@ from uuid import uuid4
 from pathlib import Path
 from dotenv import load_dotenv
 
+load_dotenv()
+
 # GUI 파일 선택창을 위한 tkinter
 import tkinter as tk
 from tkinter import filedialog
@@ -17,12 +19,12 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm
 
-from src.graph import graph
+from src.graph import build_graph_run_config, graph
 from src.schemas import InvestmentAgentState
 from src.rag.ingest import ingest_documents
 
-load_dotenv()
 console = Console()
+
 
 def test_environment():
     """test_env.py 의 기능을 메인에 통합하여 환경 점검을 수행합니다."""
@@ -33,7 +35,13 @@ def test_environment():
         from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
         # 가벼운 핑 테스트
-        llm.invoke("ping")
+        llm.invoke(
+            "ping",
+            config={
+                "run_name": "openai-connectivity-check",
+                "tags": ["preflight", "openai"],
+            },
+        )
         console.print("  [green]✔ OpenAI API 연결 성공[/green]")
     except Exception as e:
         console.print(f"  [red]✖ OpenAI API 연결 실패:[/red] {e}")
@@ -43,8 +51,10 @@ def test_environment():
     # 2. LangSmith 체크
     tracing = os.environ.get("LANGCHAIN_TRACING_V2")
     project = os.environ.get("LANGCHAIN_PROJECT")
-    if tracing == "true":
+    if tracing and tracing.lower() == "true" and os.environ.get("LANGCHAIN_API_KEY"):
         console.print(f"  [green]✔ LangSmith 트레이싱 활성화 (프로젝트: {project})[/green]")
+    elif tracing and tracing.lower() == "true":
+        console.print("  [yellow]⚠ 트레이싱은 켜져 있으나 LANGCHAIN_API_KEY가 없어 원격 저장되지 않을 수 있습니다.[/yellow]")
     else:
         console.print("  [yellow]⚠ LangSmith 트레이싱 비활성화 상태[/yellow]")
         
@@ -161,7 +171,8 @@ def main():
         
         task_id = progress.add_task("[cyan]에이전트 네트워크 준비 중...", total=None)
         
-        for event in graph.stream(initial_state):
+        run_config = build_graph_run_config(initial_state["trace_id"])
+        for event in graph.stream(initial_state, config=run_config):
             for node_name, node_state in event.items():
                 if node_name == "load_inputs":
                     companies = node_state.get("selected_companies", [])

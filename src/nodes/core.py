@@ -264,14 +264,25 @@ def compare_companies(state: InvestmentAgentState) -> dict:
     return {"final_comparison": ComparisonResult(companies=companies, comparison_table=table)}
 
 def generate_report(state: InvestmentAgentState) -> dict:
-    """5쪽 이내의 마크다운 보고서 작성 및 최종 PDF 리포트 생성"""
+    """요약·서지정보가 연결된 Markdown 및 PDF 투자보고서를 생성합니다."""
     comp = state.get("final_comparison")
     if not comp:
         return {"report_draft": "", "report_errors": ["종합 비교 결과가 없습니다."]}
 
+    from src.report_generator import (
+        build_report_summary,
+        collect_reference_entries,
+        generate_pdf_report,
+    )
+
+    report_summary = build_report_summary(comp.companies)
     report = f"""# Battery Intelligence 스타트업 투자검토 보고서
 
 ## SUMMARY
+
+{report_summary}
+
+## 분석 결과
 
 {comp.comparison_table}
 
@@ -316,12 +327,20 @@ def generate_report(state: InvestmentAgentState) -> dict:
             source_ids.extend(profile.supporting_evidence_ids)
             source_ids.extend(profile.contrary_evidence_ids)
 
-    report += "\n## REFERENCE\n"
     unique_source_ids = list(dict.fromkeys(source_ids))
-    if unique_source_ids:
-        report += "".join(f"- [{source_id}] 검색·검증된 입력 문서 근거\n" for source_id in unique_source_ids)
+    reference_groups = collect_reference_entries(unique_source_ids)
+    report += "\n## REFERENCE\n"
+    if reference_groups:
+        for category in ("기관 보고서", "학술 논문", "웹페이지"):
+            entries = reference_groups.get(category, [])
+            if not entries:
+                continue
+            report += f"\n### {category}\n\n"
+            for entry in entries:
+                cited_ids = ", ".join(f"[{source_id}]" for source_id in entry["requested_ids"])
+                report += f"- {entry['citation']} (근거 ID: {cited_ids})\n"
     else:
-        report += "- 보고서 판정에 연결된 유효 근거 ID 없음\n"
+        report += "\n- 실제 인용된 자료의 서지정보를 입력 문서에서 확인하지 못했습니다.\n"
 
     output_dir = Path(__file__).parent.parent.parent / "output"
     output_dir.mkdir(exist_ok=True)
@@ -331,8 +350,7 @@ def generate_report(state: InvestmentAgentState) -> dict:
 
     errors = list(state.get("report_errors", []))
     try:
-        from src.report_generator import generate_pdf_report
-        pdf_path = generate_pdf_report(comp)
+        pdf_path = generate_pdf_report(comp, report_summary=report_summary)
         if pdf_path:
             print(f"🎉 고품질 PDF 보고서가 생성되었습니다: {pdf_path}")
     except Exception as e:

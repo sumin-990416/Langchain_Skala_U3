@@ -1,15 +1,11 @@
 import datetime
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
+from urllib.parse import urlparse
 
-import matplotlib
-import numpy as np
 from jinja2 import Environment, FileSystemLoader, select_autoescape
-
-# GUI가 없는 터미널·CI에서도 차트를 생성할 수 있는 백엔드를 강제합니다.
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 
 # Apple Silicon의 Homebrew 라이브러리를 WeasyPrint가 찾을 수 있게 합니다.
 os.environ["DYLD_FALLBACK_LIBRARY_PATH"] = (
@@ -52,6 +48,153 @@ def _unique(values: Iterable[str]) -> list[str]:
     return list(dict.fromkeys(value for value in values if value))
 
 
+def _canonical_source_id(source_id: str) -> str:
+    return re.sub(r"[^A-Z0-9]", "", source_id.upper())
+
+
+def build_report_summary(companies: list[Any]) -> str:
+    """Return a concise investment conclusion, not an overview slide."""
+    total = len(companies)
+    on_hold = sum("유보" in company.final_decision for company in companies)
+    if total and on_hold == total:
+        opening = (
+            f"검토 대상 {total}개 기업 모두 공개 근거만으로 투자 판단을 확정하기 어려워 "
+            "현재 우선 투자 대상을 선정하지 않았으며, 추가 실사 후 재검토가 필요하다."
+        )
+    else:
+        opening = f"검토 대상 {total}개 기업의 투자 판단과 근거 수준을 요약한다."
+    company_summaries = []
+    for company in companies:
+        scored = sum(profile.weighted_score is not None for profile in company.profile_results)
+        total_profiles = len(company.profile_results)
+        company_summaries.append(
+            f"{company.company_name}: {company.final_decision}, "
+            f"근거충족률 {company.evidence_coverage:.1f}%, "
+            f"점수 산출 {scored}/{total_profiles}개 관점"
+        )
+    return opening + (" " + " / ".join(company_summaries) if company_summaries else "")
+
+
+def collect_reference_entries(
+    source_ids: Iterable[str], raw_dir: Optional[Path] = None
+) -> Dict[str, list[Dict[str, Any]]]:
+    """Resolve only cited evidence IDs to bibliographic details present in input PDFs."""
+    requested: Dict[str, list[str]] = {}
+    for source_id in source_ids:
+        if source_id.strip():
+            canonical_id = _canonical_source_id(source_id)
+            requested.setdefault(canonical_id, [])
+            if source_id not in requested[canonical_id]:
+                requested[canonical_id].append(source_id)
+    if not requested:
+        return {}
+
+    documents_dir = raw_dir or Path(__file__).parent.parent / "data" / "raw"
+    card_start = re.compile(r"(?m)^\s*([AVEG]\d{2})\s*\|\s*([^|\n]+)\s*\|\s*([^\n]+)")
+    url_pattern = re.compile(r"https?://[^\s<>()]+", re.IGNORECASE)
+    resolved: Dict[str, Dict[str, str]] = {}
+
+    for pdf_path in sorted(documents_dir.glob("*.pdf")):
+        from pypdf import PdfReader
+        reader = PdfReader(str(pdf_path))
+        for page_number, page in enumerate(reader.pages, start=1):
+            text = (page.extract_text() or "").replace("\x00", "")
+            matches = list(card_start.finditer(text))
+            page_card: Optional[Dict[str, str]] = None
+            for index, match in enumerate(matches):
+                canonical_id = _canonical_source_id(match.group(1))
+                if canonical_id in resolved:
+                    continue
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+                lines = [line.strip() for line in text[match.start():end].splitlines() if line.strip()]
+                if len(lines) < 3:
+                    continue
+                title = lines[1]
+                block = "\n".join(lines)
+                author_match = re.search(r"작성\s*주체\s*[·:]\s*([^/\n|]+)", block)
+                author = author_match.group(1).strip() if author_match else match.group(2).strip()
+                date_match = re.search(
+                    r"발행일\s*[·:]\s*([^|\n]+)(?:\|\s*확인일\s*[·:]\s*([0-9]{4}-[0-9]{2}-[0-9]{2}))?",
+                    block,
+                )
+                publication_date = date_match.group(1).strip() if date_match else "미상"
+                checked_date = date_match.group(2).strip() if date_match and date_match.group(2) else ""
+                urls = url_pattern.findall(block)
+                url = urls[-1].rstrip(".,;") if urls else ""
+                site = urlparse(url).hostname or match.group(2).strip()
+                site = site.removeprefix("www.")
+                card_kind = match.group(3).strip()
+
+                if "논문" in card_kind or "연구" in card_kind:
+                    kind = "학술 논문"
+                    journal = ""
+                    title_parts = title.rsplit(" | ", 1)
+                    if len(title_parts) == 2:
+                        title, journal = title_parts
+                    citation_block = re.sub(
+                        r"확인일\s*[·:]\s*\d{4}-\d{2}-\d{2}", "", block
+                    )
+                    year_match = re.search(r"\b(?:19|20)\d{2}\b", publication_date)
+                    if year_match is None:
+                        year_match = re.search(r"\b(?:19|20)\d{2}\b", citation_block[match.end():])
+                    year = year_match.group(0) if year_match else ""
+                    citation = (
+                        f"{author}({year or '발행연도 미상'}). {title}."
+                        + (f" *{journal}*." if journal else "")
+                        + (f" {url}" if url else "")
+                    )
+                elif "보고서" in card_kind:
+                    kind = "기관 보고서"
+                    year_match = re.search(r"\b(?:19|20)\d{2}\b", publication_date)
+                    date_label = year_match.group(0) if year_match else "발행연도 미상"
+                    if author.strip() in {"기업", "기관", "개인", "미상"}:
+                        author = match.group(2).strip()
+                    citation = f"{author}({date_label}). *{title}*." + (f" {url}" if url else "")
+                else:
+                    kind = "웹페이지"
+                    if author.strip() in {"기업", "기관", "개인", "미상"}:
+                        author = match.group(2).strip()
+                    date_label = publication_date if publication_date != "미상" else (
+                        checked_date or "날짜 미상"
+                    )
+                    citation = f"{author}({date_label}). *{title}*. {site}." + (f" {url}" if url else "")
+
+                entry = {
+                    "kind": kind,
+                    "citation": citation,
+                    "source_id": match.group(1),
+                }
+                resolved[canonical_id] = entry
+                if page_card is None:
+                    page_card = entry
+            if page_card is not None:
+                page_alias = _canonical_source_id(f"{pdf_path.stem}:p{page_number}")
+                resolved.setdefault(page_alias, page_card)
+
+    grouped: Dict[str, list[Dict[str, Any]]] = {}
+    for canonical_id, requested_ids in requested.items():
+        entry = resolved.get(canonical_id)
+        if entry is None:
+            continue
+        category_entries = grouped.setdefault(entry["kind"], [])
+        matching_entry = next(
+            (
+                existing for existing in category_entries
+                if existing["source_id"] == entry["source_id"]
+            ),
+            None,
+        )
+        if matching_entry is None:
+            category_entries.append({**entry, "requested_ids": requested_ids.copy()})
+        else:
+            matching_entry["requested_ids"].extend(
+                source_id
+                for source_id in requested_ids
+                if source_id not in matching_entry["requested_ids"]
+            )
+    return grouped
+
+
 def _domain_score(company: Any, domain: Domain) -> Optional[float]:
     return company.domain_scores.get(domain, company.domain_scores.get(domain.value))
 
@@ -82,10 +225,8 @@ def _company_context(company: Any) -> Dict[str, Any]:
         "name": company.company_name,
         "description": COMPANY_DESCRIPTIONS.get(company.company_name, "Battery Intelligence 분석 대상 기업"),
         "score": _score_text(company.average_score),
-        "score_numeric": company.average_score,
         "std_dev": _score_text(company.score_std_dev),
         "coverage": f"{company.evidence_coverage:.1f}%",
-        "coverage_numeric": company.evidence_coverage,
         "category": company.result_category.value,
         "decision": company.final_decision,
         "summary": _truncate(company.summary_reason, 185),
@@ -101,67 +242,12 @@ def _company_context(company: Any) -> Dict[str, Any]:
     }
 
 
-def _set_chart_font() -> None:
-    import matplotlib.font_manager as font_manager
-
-    candidates = ["AppleGothic", "Apple SD Gothic Neo", "NanumGothic", "DejaVu Sans"]
-    available = {font.name for font in font_manager.fontManager.ttflist}
-    plt.rcParams["font.family"] = next(
-        (font for font in candidates if font in available), "DejaVu Sans"
-    )
-    plt.rcParams["axes.unicode_minus"] = False
-
-
-def _write_charts(company_rows: list[Dict[str, Any]], images_dir: Path) -> tuple[Path, Path]:
-    images_dir.mkdir(parents=True, exist_ok=True)
-    _set_chart_font()
-    colors = ["#2f75b5", "#3e9b78", "#7552aa", "#dc7d2d", "#68768a"]
-
-    bar_chart_path = images_dir / "bar_chart.png"
-    names = [row["name"] for row in company_rows]
-    scores = [row["score_numeric"] or 0 for row in company_rows]
-    fig, ax = plt.subplots(figsize=(6.4, 2.25))
-    y_pos = np.arange(len(names))
-    ax.barh(y_pos, scores, color=colors[: len(names)], height=0.38)
-    ax.set_yticks(y_pos, labels=names)
-    ax.set_xlim(0, 108)
-    ax.invert_yaxis()
-    ax.tick_params(axis="x", bottom=False, labelbottom=False)
-    ax.tick_params(axis="y", labelsize=8)
-    for index, row in enumerate(company_rows):
-        x = (row["score_numeric"] or 0) + 1.5
-        ax.text(x, index, row["score"], va="center", fontsize=8, color="#1b2a41")
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    fig.tight_layout(pad=0.4)
-    fig.savefig(bar_chart_path, dpi=220, bbox_inches="tight", transparent=True)
-    plt.close(fig)
-
-    donut_chart_path = images_dir / "donut_chart.png"
-    count = max(1, len(company_rows))
-    fig, axes = plt.subplots(1, count, figsize=(6.4, 2.25))
-    if count == 1:
-        axes = [axes]
-    for index, row in enumerate(company_rows):
-        ax = axes[index]
-        coverage = max(0.0, min(100.0, row["coverage_numeric"]))
-        ax.pie(
-            [coverage, 100 - coverage],
-            colors=[colors[index % len(colors)], "#e7ecf2"],
-            startangle=90,
-            counterclock=False,
-            wedgeprops={"width": 0.28, "edgecolor": "white"},
-        )
-        ax.text(0, 0.04, f"{coverage:.0f}%", ha="center", va="center", fontsize=10)
-        ax.set_title(row["name"], y=-0.12, fontsize=7.5)
-    fig.tight_layout(pad=0.3)
-    fig.savefig(donut_chart_path, dpi=220, bbox_inches="tight", transparent=True)
-    plt.close(fig)
-    return bar_chart_path, donut_chart_path
-
-
-def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str] = None) -> str:
-    """판단 유보·부분 근거 부족·Agent 오류를 포함해 항상 5쪽 보고서를 생성합니다."""
+def generate_pdf_report(
+    comparison_result: Any,
+    output_path: Optional[Path | str] = None,
+    report_summary: Optional[str] = None,
+) -> str:
+    """Generate a concise-summary PDF with cited references and a 10-page cap."""
     # WeasyPrint의 시스템 의존성이 없더라도 다른 모듈과 Markdown 생성은
     # 계속되도록 실제 PDF 생성 시점에만 불러옵니다.
     try:
@@ -182,27 +268,6 @@ def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str
         raise ValueError("PDF 보고서에 표시할 기업 결과가 없습니다.")
 
     company_rows = [_company_context(company) for company in companies]
-    fully_scored_names = {
-        company.company_name
-        for company in companies
-        if company.average_score is not None
-        and all(profile.weighted_score is not None for profile in company.profile_results)
-    }
-    scored_rows = [
-        row for row in company_rows
-        if row["name"] in fully_scored_names and row["score_numeric"] is not None
-    ]
-    best_company = max(scored_rows, key=lambda row: row["score_numeric"], default=None)
-    if best_company is None:
-        headline = "전체 기업 판단 유보"
-        headline_detail = "산출 가능한 Profile 점수가 없어 우선검토 기업을 선정하지 않았습니다."
-    else:
-        headline = best_company["decision"]
-        headline_detail = f"{best_company['name']} | {best_company['score']}점"
-
-    images_dir = pdf_path.parent / f"{pdf_path.stem}_images"
-    bar_chart_path, donut_chart_path = _write_charts(company_rows, images_dir)
-
     profiles_dict: Dict[str, list[Dict[str, str]]] = {}
     source_ids = []
     for company in company_rows:
@@ -212,12 +277,7 @@ def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str
             })
         source_ids.extend(company["source_ids"])
 
-    raw_dir = base_dir / "data" / "raw"
-    input_documents = sorted(path.name for path in raw_dir.iterdir() if path.is_file()) if raw_dir.exists() else []
-    category_counts: Dict[str, int] = {}
-    for company in company_rows:
-        category_counts[company["category"]] = category_counts.get(company["category"], 0) + 1
-
+    reference_entries = collect_reference_entries(source_ids)
     env = Environment(
         loader=FileSystemLoader(str(base_dir / "src" / "templates")),
         autoescape=select_autoescape(["html", "xml"]),
@@ -225,16 +285,15 @@ def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str
     template = env.get_template("report.html")
     html_content = template.render(
         date=datetime.datetime.now().strftime("%Y-%m-%d"),
+        report_summary=report_summary or build_report_summary(companies),
         companies=company_rows,
-        best_company=best_company,
-        headline=headline,
-        headline_detail=headline_detail,
         profiles_dict=profiles_dict,
-        category_counts=category_counts,
-        source_ids=_unique(source_ids)[:32],
-        input_documents=input_documents,
-        bar_chart_path=bar_chart_path.resolve().as_uri(),
-        donut_chart_path=donut_chart_path.resolve().as_uri(),
+        reference_groups=reference_entries,
     )
     HTML(string=html_content, base_url=str(base_dir)).write_pdf(pdf_path)
+    from pypdf import PdfReader
+    page_count = len(PdfReader(str(pdf_path)).pages)
+    if page_count > 10:
+        pdf_path.unlink(missing_ok=True)
+        raise ValueError(f"보고서가 최대 10페이지를 초과했습니다: {page_count}페이지")
     return str(pdf_path)

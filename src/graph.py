@@ -27,6 +27,16 @@ from src.nodes.report_quality import (
     synthesize_report_corrections,
 )
 
+
+def build_graph_run_config(trace_id: str) -> dict:
+    """Attach searchable LangSmith run metadata to each complete graph execution."""
+    return {
+        "run_name": "battery-startup-investment-report",
+        "tags": ["rag", "investment-report", "langgraph"],
+        "metadata": {"trace_id": trace_id},
+    }
+
+
 def route_evidence_check(state: InvestmentAgentState) -> Literal["score_common", "rewrite_query", "record_unknown"]:
     """
     근거 충분 여부를 판단하여 라우팅합니다.
