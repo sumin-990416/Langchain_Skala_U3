@@ -115,6 +115,18 @@ def _selected_claims(workers):
                 if key not in seen:
                     seen.add(key)
                     selected.append((worker, claim))
+    # A financial disclosure can contain distinct revenue/loss and
+    # concentration/liquidity findings. Keep both unfavourable facts.
+    for worker in workers:
+        financial_ids = {source.evidence_id for source in worker.sources
+                         if source.source_id.replace("-", "").upper() == "E09"}
+        for claim in worker.claims:
+            if claim.kind != "limitation" or not any(item.evidence_id in financial_ids for item in claim.citations):
+                continue
+            key = (claim.text, tuple((item.evidence_id, item.quote) for item in claim.citations))
+            if key not in seen:
+                seen.add(key)
+                selected.append((worker, claim))
     # A separate domain-context sentence can distinguish BESS collaboration
     # from EV deployment without replacing either the finding or its limitation.
     if workers and workers[0].perspective == Perspective.APPLICATION:
