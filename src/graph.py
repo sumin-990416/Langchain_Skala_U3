@@ -28,6 +28,8 @@ def route_evidence_check(state: InvestmentAgentState) -> Literal["score_common",
     synthesis = state.get("research_synthesis")
     sufficient = bool(synthesis and synthesis.is_sufficient)
     sufficient = sufficient and state.get("evidence_coverage", 0) >= 80
+    sufficient = sufficient and len({e.source_document for e in state.get("validated_evidence", [])
+                                     if e.source_document}) >= 2
     if sufficient:
         return "score_common"
     if state.get("evidence_retry_count", 0) < state.get("max_evidence_retries", 2):
@@ -36,6 +38,12 @@ def route_evidence_check(state: InvestmentAgentState) -> Literal["score_common",
 
 def route_to_profiles(state: InvestmentAgentState):
     """공통 점수 후 5개 프로필 에이전트를 병렬 실행합니다."""
+    if not (state.get("research_synthesis") and
+            state["research_synthesis"].is_sufficient and
+            state.get("evidence_coverage", 0) >= 80 and
+            len({e.source_document for e in state.get("validated_evidence", [])
+                 if e.source_document}) >= 2):
+        return "synthesize_company"
     return [
         Send("profile_agent", {
             "profile_name": p,
@@ -123,7 +131,8 @@ def build_graph(checkpointer=None):
     workflow.add_edge("record_unknown", "score_common")
 
     # 병렬 에이전트 실행
-    workflow.add_conditional_edges("score_common", route_to_profiles, ["profile_agent"])
+    workflow.add_conditional_edges("score_common", route_to_profiles,
+                                   ["profile_agent", "synthesize_company"])
     workflow.add_edge("profile_agent", "synthesize_company")
     
     workflow.add_edge("synthesize_company", "save_company_result")

@@ -30,7 +30,7 @@ class ReportCanvas(canvas.Canvas):
         if self.preview_label:
             self.saveState()
             self.setFillColor(colors.HexColor("#D35353"))
-            self.setFont("Helvetica-Bold", 9)
+            self.setFont("ReportKorean", 9)
             self.drawRightString(W - 42, 52, self.preview_label)
             self.restoreState()
         super().showPage()
@@ -108,6 +108,10 @@ def _score(company, domain):
     return 0.0
 
 
+def _scored(company):
+    return company.scoring_eligible and company.average_score is not None
+
+
 def _contributors():
     with (ROOT / "configs" / "contributors.yaml").open(encoding="utf-8") as stream:
         return yaml.safe_load(stream)["contributors"]
@@ -116,7 +120,7 @@ def _contributors():
 def generate_pdf_report(comparison_result, output_path=None, preview_label=None):
     """Render three company dossiers in exactly ten A4 pages.
 
-    The workflow's save_report node is responsible for enforcing quality checks.
+    A failed quality check is clearly marked by preview_label on every page.
     """
     companies = comparison_result.companies
     if len(companies) != 3:
@@ -144,15 +148,24 @@ def generate_pdf_report(comparison_result, output_path=None, preview_label=None)
     pdf.drawString(42, 112, "대상: " + " / ".join(c.company_name for c in companies))
     pdf.drawString(42, 87, "작성일: " + date.today().isoformat())
     pdf.drawString(42, 62, "자동 투자 결정이 아닌 추가 실사 자료입니다.")
+    if preview_label:
+        pdf.setFillColor(colors.HexColor("#FFB4B4"))
+        pdf.setFont(font, 13)
+        pdf.drawString(42, 38, preview_label)
     pdf.showPage()
 
     # 2. Executive summary
     _page(pdf, font, 2, "핵심 요약")
     y = _heading(pdf, font, "기업별 판단", H - 126)
+    if preview_label:
+        y = _text(pdf, font, "품질 평가 미통과: 근거 부족 항목은 점수를 산출하지 않았습니다. 투자 판단에 사용하지 마세요.",
+                  48, y, size=10, max_lines=3) - 18
     for company in companies:
-        y = _text(pdf, font, f"{company.company_name} | {company.average_score:.1f}점 | {company.final_decision}",
+        score_label = f"{company.average_score:.1f}점" if _scored(company) else "점수 미산출 (근거 부족)"
+        y = _text(pdf, font, f"{company.company_name} | {score_label} | {company.final_decision}",
                   48, y, size=11, max_lines=2) - 8
-        y = _text(pdf, font, f"근거 충족률 {company.evidence_coverage:.0f}% · 프로필 편차 {company.score_std_dev:.1f}점",
+        spread = f"프로필 편차 {company.score_std_dev:.1f}점" if _scored(company) else "추가 조사 필요"
+        y = _text(pdf, font, f"근거 충족률 {company.evidence_coverage:.0f}% · {spread}",
                   48, y, size=9, max_lines=2) - 28
     y = _heading(pdf, font, "읽는 방법", y - 10)
     _text(pdf, font, "점수는 서로 다른 투자 관점을 비교하기 위한 내부 지표입니다. 기술 우열이나 투자 결정을 자동으로 확정하지 않습니다.",
@@ -175,7 +188,7 @@ def generate_pdf_report(comparison_result, output_path=None, preview_label=None)
     for item in (
         "영역별 공통 점수에는 예시 값이 포함되어 있어 실투자 판단에 사용할 수 없습니다.",
         "공개 자료로 확인할 수 없는 계약·매출·성능은 미확인으로 남깁니다.",
-        "품질 검증을 통과한 실행에서만 PDF를 생성합니다.",
+        "품질 미통과 PDF는 검토용이며 투자 판단에 사용할 수 없습니다.",
     ):
         y = _text(pdf, font, "• " + item, 48, y, max_lines=3) - 14
     pdf.showPage()
@@ -186,12 +199,15 @@ def generate_pdf_report(comparison_result, output_path=None, preview_label=None)
     widths = [138, 66, 66, 66, 66, 66, 43]
     y = _row(pdf, font, y, ["기업", "기술", "시장", "재무", "리스크", "팀", "평균"], widths, True)
     for company in companies:
-        values = [f"{_score(company, key):.0f}" for key in
-                  ("technology", "market", "finance", "risk", "team")]
-        y = _row(pdf, font, y, [company.company_name, *values, f"{company.average_score:.1f}"], widths)
+        values = ([f"{_score(company, key):.0f}" for key in
+                   ("technology", "market", "finance", "risk", "team")]
+                  if _scored(company) else ["미산출"] * 5)
+        average = f"{company.average_score:.1f}" if _scored(company) else "미산출"
+        y = _row(pdf, font, y, [company.company_name, *values, average], widths)
     y = _heading(pdf, font, "관점 차이", y - 44)
     for company in companies:
-        y = _text(pdf, font, f"{company.company_name}: 5개 프로필 점수 표준편차 {company.score_std_dev:.1f}점",
+        spread = f"5개 프로필 점수 표준편차 {company.score_std_dev:.1f}점" if _scored(company) else "근거 부족으로 점수 미산출"
+        y = _text(pdf, font, f"{company.company_name}: {spread}",
                   48, y, max_lines=2) - 18
     pdf.showPage()
 
@@ -199,12 +215,16 @@ def generate_pdf_report(comparison_result, output_path=None, preview_label=None)
     for number, company in enumerate(companies, 5):
         _page(pdf, font, number, company.company_name)
         y = _heading(pdf, font, "판정 및 핵심 판단", H - 126)
-        y = _text(pdf, font, f"{company.final_decision} | 평균 {company.average_score:.1f}점 | 근거 충족률 {company.evidence_coverage:.0f}%",
+        score_label = f"평균 {company.average_score:.1f}점" if _scored(company) else "점수 미산출 (근거 부족)"
+        y = _text(pdf, font, f"{company.final_decision} | {score_label} | 근거 충족률 {company.evidence_coverage:.0f}%",
                   48, y, size=11, max_lines=2) - 16
         y = _text(pdf, font, company.summary_reason, 48, y, max_lines=6) - 22
         y = _heading(pdf, font, "영역별 평가", y)
         for key, label in (("technology", "기술"), ("market", "시장"),
                            ("finance", "재무"), ("risk", "리스크"), ("team", "팀")):
+            if not _scored(company):
+                y = _text(pdf, font, f"{label}: 근거 부족 · 점수 미산출", 48, y, size=9, max_lines=1) - 20
+                continue
             score = max(0, min(100, _score(company, key)))
             pdf.setFillColor(NAVY)
             pdf.setFont(font, 9)
@@ -220,11 +240,12 @@ def generate_pdf_report(comparison_result, output_path=None, preview_label=None)
                   48, y, size=9, max_lines=3) - 8
         y = _text(pdf, font, "근거 ID: " + (", ".join(company.evidence_sources[:12]) or "없음"),
                   48, y, size=8, max_lines=3) - 19
-        y = _heading(pdf, font, "5개 투자 관점", y)
-        for profile in company.profile_results[:5]:
-            y = _text(pdf, font,
-                      f"{profile.profile_name} {profile.weighted_score:.1f}점 - {profile.recommendation}",
-                      48, y, size=9, max_lines=2, lead=14) - 10
+        if _scored(company):
+            y = _heading(pdf, font, "5개 투자 관점", y)
+            for profile in company.profile_results[:5]:
+                y = _text(pdf, font,
+                          f"{profile.profile_name} {profile.weighted_score:.1f}점 - {profile.recommendation}",
+                          48, y, size=9, max_lines=2, lead=14) - 10
         pdf.showPage()
 
     # 8. Ownership and perspectives
@@ -238,8 +259,9 @@ def generate_pdf_report(comparison_result, output_path=None, preview_label=None)
     widths = [162, 116, 116, 117]
     y = _row(pdf, font, y, ["투자 관점", *[c.company_name for c in companies]], widths, True)
     for person in contributors:
-        scores = [next((f"{p.weighted_score:.1f}" for p in c.profile_results
-                        if p.profile_name == person["profile"]), "-") for c in companies]
+        scores = [(next((f"{p.weighted_score:.1f}" for p in c.profile_results
+                         if p.profile_name == person["profile"]), "-")
+                   if _scored(c) else "미산출") for c in companies]
         y = _row(pdf, font, y, [person["profile"], *scores], widths)
     _text(pdf, font, "기존 PR은 dev 브랜치 이력입니다. 역할표는 현재 main의 GitHub 기여 기록을 대신하지 않습니다.",
           48, y - 26, size=9, max_lines=2)

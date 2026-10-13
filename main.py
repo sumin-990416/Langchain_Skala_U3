@@ -228,7 +228,9 @@ def main():
                     res = node_state.get("company_result")
                     if res:
                         color = "green" if "추천" in res.final_decision or "RECOMMEND" in res.final_decision else "red"
-                        console.print(f" ➔ ⚖️ [bold {color}]최종 투자 판정:[/bold {color}] {res.final_decision} ({res.average_score:.1f}점)")
+                        score_label = (f"{res.average_score:.1f}점"
+                                       if res.average_score is not None else "점수 미산출 · 근거 부족")
+                        console.print(f" ➔ ⚖️ [bold {color}]최종 투자 판정:[/bold {color}] {res.final_decision} ({score_label})")
                 
                 elif node_name == "compare_companies":
                     console.print(" ➔ 📊 기업 비교 및 최종 테이블 작성 완료")
@@ -275,7 +277,7 @@ def main():
     if final_status == "COMPLETE":
         console.print(Panel(f"[bold green]✅ 품질 평가 통과[/bold green]\n보고서: [bold yellow]{report_path.name}[/bold yellow]", border_style="green"))
     elif final_status:
-        console.print(Panel(f"[bold yellow]⚠ 품질 평가 또는 PDF 생성 미완료: {final_status}[/bold yellow]\n검토용 초안: {report_path.name if report_path else '없음'}", border_style="yellow"))
+        console.print(Panel(f"[bold yellow]⚠ 품질 평가 미통과: {final_status}[/bold yellow]\n검토용 보고서: {report_path.name if report_path else '없음'}", border_style="yellow"))
     else:
         console.print(Panel("[yellow]실행이 이미 종료되었거나 재개할 단계가 없습니다.[/yellow]", border_style="yellow"))
 

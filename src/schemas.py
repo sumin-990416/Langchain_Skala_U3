@@ -95,8 +95,9 @@ class CompanyResult(BaseModel):
     domain_scores: Dict[Domain, float]
     evidence_coverage: float
     profile_results: List[ProfileResult]
-    average_score: float
-    score_std_dev: float
+    average_score: Optional[float]
+    score_std_dev: Optional[float]
+    scoring_eligible: bool = True
     final_decision: str
     summary_reason: str
     evidence_sources: List[str] = Field(default_factory=list)

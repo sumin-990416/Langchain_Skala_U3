@@ -3,16 +3,17 @@ from unittest.mock import patch
 
 from langchain_core.documents import Document
 
-from src.graph import assign_research_workers, graph, route_evidence_check, route_report_validation
+from src.graph import assign_research_workers, graph, route_evidence_check, route_report_validation, route_to_profiles
 from src.nodes.core import (
     orchestrate_research, research_worker, synthesize_research, validate_plan,
-    validate_report,
+    validate_report, score_common, synthesize_company, compare_companies, generate_report,
 )
 from src.schemas import (
     Company, CompanyResult, ComparisonResult,
     Domain,
     Evidence,
     ResearchResult,
+    ResearchSynthesis,
     ResearchTask,
     reset_or_add_research,
 )
@@ -30,6 +31,24 @@ class FailingPlanner:
 
 
 class OrchestratorWorkersTests(unittest.TestCase):
+    def test_insufficient_evidence_does_not_produce_scores(self):
+        state = {
+            "current_company": Company(name="A"),
+            "evidence_coverage": 40.0,
+            "research_synthesis": ResearchSynthesis(is_sufficient=False),
+            "profile_results": [],
+            "validated_evidence": [],
+        }
+        self.assertEqual(score_common(state)["domain_scores"], {})
+        self.assertEqual(route_to_profiles(state), "synthesize_company")
+        company = synthesize_company(state)["company_result"]
+        self.assertFalse(company.scoring_eligible)
+        self.assertIsNone(company.average_score)
+        comparison = compare_companies({"company_results": [company]})["final_comparison"]
+        self.assertIn("미산출", comparison.comparison_table)
+        draft = generate_report({"final_comparison": comparison})["report_draft"]
+        self.assertIn("미산출 (근거 부족)", draft)
+
     def test_orchestrator_falls_back_to_five_independent_domain_tasks(self):
         state = {
             "current_company": Company(name="ACCURE", description="battery analytics")
@@ -58,7 +77,7 @@ class OrchestratorWorkersTests(unittest.TestCase):
         task = ResearchTask(
             task_id="tech", domain=Domain.TECHNOLOGY, query="모델 성능"
         )
-        docs = [(Document(page_content="근거", metadata={"source_id": "D1"}), 0.1)]
+        docs = [(Document(page_content="근거", metadata={"source_id": "D1", "company": "A"}), 0.1)]
         with patch("src.nodes.core.retrieve_top_k", return_value=docs):
             update = research_worker(
                 {"current_company": Company(name="A"), "research_task": task}
@@ -66,6 +85,14 @@ class OrchestratorWorkersTests(unittest.TestCase):
 
         self.assertEqual(update["research_results"][0].task, task)
         self.assertEqual(update["research_results"][0].evidence[0].source_id, "D1")
+
+    def test_worker_rejects_other_company_document(self):
+        task = ResearchTask(task_id="tech", domain=Domain.TECHNOLOGY, query="모델 성능")
+        docs = [(Document(page_content="ACCURE 근거", metadata={"company": "ACCURE"}), 0.1)]
+        with patch("src.nodes.core.retrieve_top_k", return_value=docs):
+            update = research_worker({"current_company": Company(name="volytica diagnostics"),
+                                      "research_task": task})
+        self.assertEqual(update["research_results"][0].status, "EMPTY")
 
     def test_synthesizer_deduplicates_worker_evidence(self):
         task = ResearchTask(task_id="tech", domain=Domain.TECHNOLOGY, query="기술")

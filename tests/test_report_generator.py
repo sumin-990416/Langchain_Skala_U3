@@ -42,6 +42,24 @@ class ReportGeneratorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             generate_pdf_report(ComparisonResult(companies=[]))
 
+    def test_insufficient_evidence_is_unscored_in_pdf(self):
+        companies = [CompanyResult(
+            company_name=name, domain_scores={}, evidence_coverage=40,
+            profile_results=[], average_score=None, score_std_dev=None,
+            scoring_eligible=False, final_decision="근거 부족 판단 유보",
+            summary_reason="근거 부족: 추가 조사 필요",
+        ) for name in ("A", "B", "C")]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "report.pdf"
+            generate_pdf_report(ComparisonResult(companies=companies), path,
+                                preview_label="검토용 - 품질 평가 미통과")
+            reader = PdfReader(path)
+            self.assertIn("점수 미산출", reader.pages[1].extract_text())
+            self.assertIn("미산출", reader.pages[3].extract_text())
+            self.assertIn("근거 부족", reader.pages[4].extract_text())
+            self.assertTrue(all("품질 평가 미통과" in page.extract_text()
+                                for page in reader.pages))
+
 
 if __name__ == "__main__":
     unittest.main()

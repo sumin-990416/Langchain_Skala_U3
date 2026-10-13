@@ -17,7 +17,7 @@ LangGraph의 **Orchestrator–Workers 패턴**과 다중 에이전트(Multi-Agen
 | 이연주 | 균형형 | 근거 편향·영역 균형, 품질 평가 테스트 |
 | 정수민 | 사업성중심형·통합 | 사업모델, LangGraph 통합, 보고서 생성 테스트 |
 
-품질 검증을 통과하면 ReportLab이 `output/report.pdf`에 **A4 10쪽 보고서**를 생성합니다. 1쪽 표지, 2쪽 요약, 3쪽 방법, 4쪽 비교, 5~7쪽 기업별 분석, 8쪽 담당 관점, 9쪽 근거 품질, 10쪽 추가 실사·출처 순서입니다. 실패한 실행은 PDF를 새로 만들지 않고 `output/final_multi_agent_report.md`에 검토용 초안을 남깁니다. 기존 PDF가 남아 있다면 현재 실행의 성공 증거로 사용하지 마세요.
+ReportLab이 `output/report.pdf`에 **A4 10쪽 보고서**를 생성합니다. 1쪽 표지, 2쪽 요약, 3쪽 방법, 4쪽 비교, 5~7쪽 기업별 분석, 8쪽 담당 관점, 9쪽 근거 품질, 10쪽 추가 실사·출처 순서입니다. 품질 미통과 시에도 각 항목을 `미산출`로 표시한 **검토용 PDF**와 `output/final_multi_agent_report.md`를 생성하며, PDF 각 쪽에 경고를 표시합니다. 검토용 PDF를 투자 판단에 사용하면 안 됩니다.
 
 `output/pdf/report-layout-preview.pdf`는 **합성 테스트 데이터로 만든 레이아웃 미리보기**이며 모든 쪽에 표시가 있습니다. 실제 평가 결과인 `report.pdf`와 구분해야 합니다. 원격 `dev`의 기존 8쪽 PDF와 요약·근거카드 PDF도 확인했지만, 요약본을 독립 원본으로 중복 계산할 수 없어 로컬 최종 보고서의 출처 요건을 충족한 것으로 간주하지 않았습니다.
 
@@ -31,11 +31,26 @@ LangGraph의 **Orchestrator–Workers 패턴**과 다중 에이전트(Multi-Agen
 | 동적 Fan-out | 계획 수립 뒤 `Send` 목록을 생성. 계획의 실제 작업 수와 내용에 따라 Worker 실행 | `src/graph.py:assign_research_workers` |
 | 병렬 결과·Synthesis 분리 | Worker는 자신의 `ResearchResult`만 반환하고 reducer가 병합. `synthesize_research`는 결과를 정렬·중복 제거하고 성공/실패/빈 결과 및 누락 영역을 계산 | `src/schemas.py`, `src/nodes/core.py` |
 | Worker 일부 실패 | 검색 오류는 Worker 안에서 최대 2회 시도한 후 `FAILED` 결과와 구조화 오류를 반환. 성공한 Worker 결과는 계속 사용. 근거 부족 시 전체 조사 계획을 최대 2회 재실행하고, 이후 미확인으로 기록 | `src/nodes/core.py`, `src/graph.py` |
+| 근거 부족 시 점수 미산출 | 재조사 후에도 근거가 부족하면 공통·Profile 점수 산출을 건너뛰고 `근거 부족 판단 유보`로 판정. 비교표, Markdown, PDF에는 `미산출 (근거 부족)`을 표시 | `src/graph.py`, `src/nodes/core.py`, `src/report_generator.py` |
 | 제어와 페이로드 분리 | `run_id`, `status`, `plan_version`, 재시도 상한은 제어 필드. `research_tasks`, `research_results`, `research_synthesis`, `validated_evidence`는 작업 데이터 | `src/schemas.py:InvestmentAgentState` |
 | 지속성 비용 | Worker가 State에 넣는 문서 본문을 청크당 500자로 제한. 기업 완료 시 현재 Worker 결과를 초기화하고 최종 보고서는 `report_uri`만 남김 | `src/nodes/core.py`, `src/schemas.py` |
 | 동시 쓰기·종료 보장 | `research_results`, `profile_results`, `company_results`, `errors`에 reducer 적용. 근거 조사와 보고서 수정은 각각 상한 2회 | `src/schemas.py`, `src/graph.py` |
 | 보고서 품질 평가 | 생성 후 `validate_report`에서 근거 ID, 기술 우열 단정 표현, 기업별 독립 원본 문서 2개 이상을 검사. 미달이면 최대 2회 생성·평가 후 미통과 상태를 명시하여 저장 | `src/nodes/core.py`, `src/graph.py` |
 | 재개·관측성 | SQLite checkpointer에 단계별 상태를 저장하고 `--resume RUN_ID`로 재개. State의 `run_id`·`task_id`와 Worker별 상태·시도·소요 시간을 기록. 상세 호출 추적은 LangSmith 환경 설정에 따름 | `main.py`, `src/schemas.py` |
+
+### 보고서 품질 평가
+
+보고서 생성 전 단계는 Orchestrator–Workers 조사와 5개 Profile Agent 평가로 구성됩니다. `generate_report` 이후에는 별도의 `validate_report` 노드가 보고서를 평가합니다. 미통과하면 `generate_report`로 돌아가 다시 작성·평가하며, `max_report_retries=2`에 도달하면 반복을 멈춥니다. 이후에도 PDF를 생성하지만 미산출 항목과 품질 미통과 경고를 명시합니다.
+
+| 평가 항목 | 확인할 내용 | 목적 |
+|---|---|---|
+| Groundedness | 보고서의 주요 주장이 검색된 근거와 출처 ID로 추적되는가 | Reference 연결성 확보, Hallucination 통제 |
+| 중립성 | 근거 없이 특정 기술의 우열이나 추천을 단정하지 않는가 | 기술 평가와 투자 판단의 구분 |
+| 편향 통제 | 단일 출처 또는 유리한 근거에 과도하게 의존하지 않는가 | 확증편향 방지 |
+
+평가 방식에는 세 가지 선택지가 있습니다. **규칙 기반**은 인용 형식·금지 표현·독립 출처 수를 재현 가능하게 확인하지만 주장 내용의 사실성까지 판단하지 못합니다. **LLM Judge**는 문맥에 따른 의미 평가가 가능하지만 판정 변동성과 비용이 있습니다. **Hybrid**는 규칙 기반 필수 조건을 먼저 검사하고 LLM Judge로 주장·근거의 의미적 일치와 균형을 추가 평가하는 방식입니다.
+
+현재 구현은 **규칙 기반(1안)**입니다. `validate_report`는 기업별 근거 ID 인용, 기술 우열 단정 표현, 기업별 독립 원본 문서 2개 이상을 검사합니다. 따라서 현재의 `groundedness=True`는 **인용 연결 형식 통과**를 뜻하며, 인용된 원문이 각 주장을 실제로 뒷받침한다는 의미적 검증 결과는 아닙니다. 의미적 Groundedness와 편향 판단을 강화하려면 근거 원문을 평가 노드에 전달하고 LLM Judge를 추가한 Hybrid(3안)로 확장해야 합니다.
 
 ### Orchestrator–Workers 구현 구조
 
@@ -69,8 +84,9 @@ Orchestrator의 제어 상태와 Worker별 결과를 분리하고, Worker에는 
 
 - Worker의 `FAILED` 결과는 실행을 중단시키지 않으며 SQLite 체크포인트로 그래프 상태를 복원할 수 있습니다. 개별 API 호출의 강제 타임아웃은 아직 없습니다. `max_concurrency=3`으로 한 번에 실행되는 작업 수를 제한합니다.
 - `score_common`의 영역별 점수는 아직 임시 고정값입니다. 근거 충족률은 실제 검증 결과에서 계산하지만, 이 점수를 실투자 판단에 사용하면 안 됩니다.
+- 근거 충족률이 80% 미만이거나 조사 결과가 충분하지 않거나 기업별 독립 원본 문서가 2개 미만이면 점수를 계산하지 않습니다. `0점`과 `미산출`은 구분하며, 보고서에는 근거 부족과 추가 조사 필요성을 명시합니다.
 - 보고서 품질 검사는 결정적 규칙 기반입니다. 문장별 사실성 판단을 수행하는 LLM Judge는 포함하지 않았습니다. 출처가 부족하면 재생성만으로 해결할 수 없으므로 품질 미통과 상태가 최종 결과에 남습니다.
-- 품질 평가를 통과한 실행에서만 새 PDF를 생성합니다. `output/report.pdf`가 이전 실행에서 남아 있을 수 있으므로, 현재 실행 상태와 생성 시각을 확인해야 합니다.
+- 품질 미통과 실행도 검토용 PDF를 생성합니다. `output/report.pdf`의 생성 시각과 실행 상태를 확인하고, 검토용 표시가 있으면 투자 판단에 사용하지 마세요.
 - `source_id`는 원본 파일과 페이지/청크에 연결됩니다. 기존 FAISS 인덱스를 사용하는 경우에는 옛 메타데이터가 남을 수 있으므로 `ingest_documents()`로 재색인해야 합니다.
 
 실행: `uv run python main.py`. 중단 후 재개: 터미널에 출력된 ID를 사용하여 `uv run python main.py --resume RUN_ID`. 체크포인트는 `.cache/checkpoints.sqlite`에 저장되며 Git에는 포함하지 않습니다.
