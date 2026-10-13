@@ -34,10 +34,15 @@ WORKER_SYSTEM_PROMPT = """당신은 기업의 특정 관점을 조사하는 근�
 - SEC가 회사 발표를 게시했다는 사실을 독립적인 기술 성능 검증으로 해석하지 마세요.
 - 공통 시장 통계·논문·표준은 맥락 근거이며 대상 기업의 성능/인증/매출을 입증하지 않습니다.
 - 모델링·잠재 효과를 실현 성과로, 배포 중/예상을 완료로, 만료된 인증서를 현재 유효로 바꾸지 마세요.
+- ISO 27001은 정보보안 관리 범위이며 AI 정확도·배터리 안전성 검증으로 쓰지 마세요.
+- 성능 수치에는 해당 국가·차량·화학계·시험 조건을 함께 적으세요. 특정 안내 자료의 범위를 기업의 기술 전체로 넓히지 마세요.
+- '독립 검증이 없다'라고 단정하지 말고 '제공 자료에서 독립 시험을 확인하지 못했다'로 확인 범위를 한정하세요.
+- SOH 운행데이터 오차와 ROI 경제성 모델링은 서로 다른 결과입니다. 성능 수치를 일괄 모델링으로 분류하지 마세요.
 - 미확인 항목은 unknowns, 추가 확인 질문은 follow_up_questions에 남기세요.
 - 모든 claim에는 제공된 evidence_id와 해당 원문의 정확한 짧은 quote가 필요합니다.
 - 입력 quotable_spans에서 evidence_id와 quote_id를 선택하세요. quote는 빈 문자열로 두면 코드가 정확한 원문을 복원합니다.
-- evidence_id는 EV-로 시작하는 실제 입력 키이며 source_id(A01/V01 등)와 구분하세요. 입력에 없는 quote_id는 만들지 마세요.
+- evidence_id는 입력의 S01/S02 같은 짧은 키이며 source_id(A01/V01 등)와 구분하세요. 입력에 없는 quote_id는 만들지 마세요.
+- evidence_id/quote_id는 citations에만 기록하고 claim.text에는 넣지 마세요.
 - 인용 문구를 만들거나 의역하지 말고 360자 이내의 원문을 그대로 복사하세요.
 - 출처가 없는 주장은 claims에 넣지 마세요. 근거가 없으면 빈 claims를 반환하세요.
 - 실제 평가와 허구 데모 자료를 구분하세요. 근거 없는 점수나 투자 추천을 만들지 마세요.
@@ -117,17 +122,34 @@ def resolve_quote_ids(analysis: WorkerAnalysis, records: list[SourceRecord]) -> 
 def _analyze(task: ResearchTask, records: list[SourceRecord], model: str) -> WorkerAnalysis:
     llm = ChatOpenAI(model=model, temperature=0, timeout=45, max_retries=0)
     structured_llm = llm.with_structured_output(WorkerAnalysis, method="function_calling")
+    aliases = {f"S{index:02d}": record for index, record in enumerate(records, start=1)}
+    spans = quotable_spans(records)
     payload = {
         "company_name": task.company_name,
         "perspective": task.perspective.value,
         "question": task.question,
-        "evidence": [record.model_dump(mode="json") for record in records],
-        "quotable_spans": quotable_spans(records),
+        "evidence": [{**record.model_dump(mode="json"), "evidence_id": alias} for alias, record in aliases.items()],
+        "quotable_spans": {alias: spans[record.evidence_id] for alias, record in aliases.items()},
     }
+    focus = {
+        "technology_maturity": "성능 검증 조건·독립 시험·실제 운영 수준을 조사한다. 보안 인증은 보안 범위로만 적는다.",
+        "market_viability": "시장성은 고객·계약·인식 매출·가격·수익모델·고객 집중과 사업 지속성이다. 기술 오차 수치만으로 시장성 관점을 채우지 않는다.",
+        "stakeholders": "고객·OEM·운영사·파트너·규제/인증기관의 역할과 책임, 데이터 권리, 고객 집중 및 이해상충을 조사한다.",
+        "domain_application": "EV/BESS/전기버스 등 구체 도메인과 현장·통합 조건을 구분한다. 차량 성능을 BESS 전체로 일반화하지 않는다.",
+    }[task.perspective.value]
+    if task.perspective.value in {"market_viability", "stakeholders"} and any(record.source_id == "E09" for record in records):
+        focus += (" E09 회사 재무·위험 공시의 불리한 내용은 반드시 limitation claim에 포함한다. "
+                  "2025 매출, 단일고객 94%와 해당 계약 종료, 계속기업 상당한 의문을 제공 근거카드의 재서술로 한정하고 해당 문장의 quote_id를 인용한다.")
     result = structured_llm.invoke(
-        [("system", WORKER_SYSTEM_PROMPT), ("human", json.dumps(payload, ensure_ascii=False))]
+        [("system", WORKER_SYSTEM_PROMPT + "\n이번 관점의 작성 조건: " + focus),
+         ("human", json.dumps(payload, ensure_ascii=False))]
     )
-    return result if isinstance(result, WorkerAnalysis) else WorkerAnalysis.model_validate(result)
+    analysis = result if isinstance(result, WorkerAnalysis) else WorkerAnalysis.model_validate(result)
+    return analysis.model_copy(update={"claims": [claim.model_copy(update={"citations": [
+        citation.model_copy(update={"evidence_id": aliases[citation.evidence_id].evidence_id})
+        if citation.evidence_id in aliases else citation
+        for citation in claim.citations
+    ]}) for claim in analysis.claims]})
 
 
 def _evidence_filename(task_id: str, revision: int) -> str:

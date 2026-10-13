@@ -163,8 +163,10 @@ def _deterministic(state: OrchestratorState) -> tuple[JudgeVerdict, list[dict]]:
                 excerpts.append({
                     "evidence_id": record.evidence_id,
                     "quote": citation.quote,
-                    "context": source_text[start:start + max(700, len(quote_text) + 400)],
+                    "context": source_text,
                     "source_group": record.source_group,
+                    "source_id": record.source_id,
+                    "source_type": record.source_type,
                 })
             if valid and result.status == "completed":
                 valid_completed.add(pair)
@@ -210,8 +212,8 @@ def _deterministic(state: OrchestratorState) -> tuple[JudgeVerdict, list[dict]]:
 def _judge(state: OrchestratorState, deterministic: JudgeVerdict, claims: list[dict]) -> JudgeVerdict:
     from langchain_openai import ChatOpenAI
 
-    payload = json.dumps({"report": state.get("report_draft", ""), "claims": claims,
-                          "deterministic_checks": deterministic.model_dump(mode="json")}, ensure_ascii=False)
+    # 형식 판정을 노출하면 Judge가 사유를 복사하기 쉬우므로 내용 평가는 별도로 수행.
+    payload = json.dumps({"report": state.get("report_draft", ""), "claims": claims}, ensure_ascii=False)
     if len(payload) > 180000:
         raise ValueError("JudgeInputTooLarge")
     llm = ChatOpenAI(model=state.get("judge_model", "gpt-4o-mini"), temperature=0, timeout=60, max_retries=1)
@@ -222,6 +224,14 @@ def _judge(state: OrchestratorState, deterministic: JudgeVerdict, claims: list[d
          "neutrality는 투자·기술 추천과 기업·기술 우열 판정이 없는지; bias_control은 독립 출처 다양성과 유리한 근거 편중, "
          "한계·상충·불확실성 누락 여부; coverage는 각 회사의 기술 성숙도·시장성·이해관계자·도메인 적용이 내용상 다뤄지는지다. "
          "근거 부족을 명시했다고 주장이 전혀 없는 관점을 통과시키지 말라. 사실보다 강한 결론과 단일 출처 편중을 엄격히 평가하라. "
+         "특히 인용문이 실재하더라도 숫자와 조건·한계를 실제로 지지하는지 독립적으로 판단하라. "
+         "SOH 오류와 ROI 모델링을 혼동하거나, ISO27001을 기술 정확도 인증으로 쓰거나, 특정 차량 절차를 기업 전체로 확대하면 groundedness 미달이다. "
+         "시장성에서 기술 성능만 반복하면 coverage 미달이다. E09 회사 재무·위험 공시가 제공됐는데 단일고객94%·계약종료·계속기업의문을 누락하면 bias_control 미달이다. "
+         "회사별 같은 작성 주체의 두 페이지를 독립 출처로 세지 말고 SEC는 회사 발표의 호스팅기관일 수 있음을 구분하라. "
+         "평가 항목을 혼동하지 말라: groundedness는 회사의 발표임을 명확히 한 주장도 인용이 내용을 지지하면 충족할 수 있다. 독립 시험 부족은 편향·한계 문제이지 인용 추적성의 자동 실패 사유가 아니다. "
+         "중립성은 투자 추천·우열·순위 결론 여부이다. 출처에 근거한 손실·계속기업 의문·고객 집중 같은 불리한 사실을 균형 있게 보고하는 것은 중립성을 해치지 않는다. "
+         "편향 통제는 보고서가 유리한 근거만 선택하거나 출처가 편중되는지 평가하며, 기업 자체의 재무위험이 크다는 사실만으로 보고서가 편향됐다고 판단하지 말라. "
+         "통과 사유에도 인용과 내용에 대한 구체적인 검토 결과를 적고, 의미 검사를 하지 않았다고 적으면서 통과시키지 말라. "
          "실패 시 company_name/perspective/reason으로 필요한 재작업 대상을 반환하고 사유는 한국어로 작성하라."),
         ("human", payload),
     ])

@@ -134,6 +134,7 @@ class OrchestratorState(TypedDict, total=False):
     report_draft: str
     eval_result: QualityVerdict
     report_errors: list[str]
+    editorial_review: dict[str, str]
 
     # 제어 메타: 동일 trace_id/thread_id로 checkpoint와 외부 로그를 연결.
     trace_id: str

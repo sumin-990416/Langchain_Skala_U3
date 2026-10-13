@@ -115,7 +115,16 @@ def _load_keyword_corpus(stamp: tuple) -> tuple:
                 prefix = source_id[0]
                 company = {"A": "ACCURE", "V": "volytica diagnostics", "E": "Electra Vehicles", "G": "ALL"}[prefix]
                 urls = re.findall(r"https?://[^\s<>]+", content)
-                url = urls[-1].rstrip(".,;)") if urls else ""
+                raw_url = urls[-1] if urls else ""
+                url = raw_url.rstrip(".,;)")
+                for ending, continuation in [(".", "pdf"), (".p", "df"), (".pd", "f")]:
+                    if raw_url.endswith(ending) and re.search(re.escape(raw_url) + r"\s*\n\s*" + continuation + r"\b", content):
+                        url = raw_url + continuation
+                        break
+                if url and not url.endswith(".pdf"):
+                    # PDF 추출에서 긴 인증서 URL의 확장자가 다음 줄로 내려간 경우.
+                    if re.search(re.escape(url) + r"\s*\n\s*\.pdf\b", content):
+                        url += ".pdf"
                 digest = hashlib.sha256(f"{path.name}|{page}|{source_id}|{content}".encode()).hexdigest()[:12]
                 source = SourceRecord(
                     evidence_id=f"EV-{digest}", source_id=source_id,
@@ -153,6 +162,8 @@ def retrieve_keyword_evidence(task: ResearchTask) -> list[SourceRecord]:
         financial = next((entry for entry in own if entry[2].source_id == "E09"), None)
         if financial and financial not in selected:
             selected.append(financial)
+        if financial:
+            selected = [financial] + [entry for entry in selected if entry is not financial]
     return [entry[2] for entry in selected[:15]]
 
 

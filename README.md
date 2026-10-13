@@ -46,6 +46,7 @@ SKALA 4기 · 울산 3반 · 4조. 배터리 AI 스타트업의 공개 문서를
 | LLM / Judge | OpenAI `gpt-4o-mini` 기본값; `--judge-model`로 변경 |
 | Structured Output | Pydantic 계획·Worker 결과·품질 verdict |
 | Retrieval | FAISS; 검색어별 Top-12에서 회사 관련 근거를 선택하고 작업당 최대 15개 보존 |
+| 명시적 대체 검색 | `--retrieval keyword`: 제공 PDF의 출처 카드·근거 요약에 대한 TF-IDF 검색. 임베딩 모델 다운로드가 필요하지 않으며 FAISS와 구분해 기록 |
 | Retrieval 평가 | **Hit Rate@K, MRR 미측정** — 정답 근거 데이터셋과 별도 평가가 필요 |
 | Embedding | `intfloat/multilingual-e5-base`, 로컬 CPU, 정규화 |
 | Reports / Observability | Markdown, PDF, 외부 JSON/JSONL, LangSmith 선택 설정 |
@@ -140,6 +141,7 @@ uv run python main.py --demo --no-pdf --output-dir output/runs/demo
 cp -n .env.example .env
 uv run python main.py
 uv run python main.py --company ACCURE --company "Electra Vehicles" --domain "배터리 AI"
+uv run python main.py --retrieval keyword --domain "배터리 AI: BESS·EV 적용"
 uv run python main.py --skip-ingest --no-pdf --quality-mode hybrid \
   --max-quality-retries 2 --max-worker-attempts 2 \
   --generator-model gpt-4o-mini --judge-model gpt-4o-mini
@@ -169,6 +171,8 @@ checkpoint.sqlite          동일 thread 재개 상태
 
 PDF는 최대 10쪽의 요약 보고서로 출력하고 상세 내용은 Markdown과 원문 파일로 확인합니다. `--no-pdf`를 사용하면 Markdown과 실행 증거만 생성합니다.
 
+PDF는 SUMMARY, 조사 범위, 기업별 네 관점, Hybrid 품질 판정과 재작업 이력, 직접 인용을 연결한 REFERENCE로 구성합니다. 인용문은 제공된 `quote_id`로 원문에서 복원하고, 회사 발표가 SEC에 게시됐다는 사실을 별도의 독립 작성 주체로 계산하지 않습니다.
+
 PDF의 한국어 글꼴은 macOS AppleGothic, Linux NanumGothic, Windows 맑은 고딕을 탐색합니다. 별도 글꼴은 `REPORT_FONT_PATH`로 지정할 수 있습니다.
 
 기존 구현은 `uv run python legacy_main.py`로 실행할 수 있습니다. 이 경로는 고정 5프로필 투자평가와 임시 공통 점수를 포함하며, 새 과제의 동적 계획·네 관점·보고서 품질 루프를 충족하는 기본 경로가 아닙니다.
@@ -188,7 +192,7 @@ uv run python main.py --demo --trace --trace-project SKALA --no-pdf
 
 터미널에 출력되는 프로젝트에서 `battery-orchestrator-workers` 실행을 열면 하위 `orchestrator`, `worker`, `synthesizer` 노드를 볼 수 있습니다. 종료 전에 explicit Client를 flush하고, 서버에서 해당 run을 읽은 후 trace 링크를 표시합니다. 조회 결과는 실행 폴더의 `langsmith-trace.json`에 기록하며, `uploaded: false`이면 전송 또는 서버 조회가 확인되지 않은 상태입니다. 완료된 실행을 `--resume`하는 경우 그래프가 다시 실행되지 않으므로 새 trace는 생성되지 않습니다.
 
-제출에는 작업 브랜치의 GitHub 링크, 동적 fan-out과 품질 재작업을 확인할 수 있는 `tracing-1.png`, `tracing-2.png` 등 LangSmith 캡처, 최대 10쪽 PDF가 필요합니다. 허구 데모의 trace를 SKALA 프로젝트에 전송하고 서버에서 `orchestrator` 1개·`worker` 9개를 확인했습니다. 제출용 캡처는 별도로 준비해야 하며, 실제 문서·LLM 기반 live 실행과 Retrieval Hit Rate/MRR은 아직 검증·측정하지 않았습니다.
+제출에는 작업 브랜치의 GitHub 링크, 동적 fan-out과 품질 재작업을 확인할 수 있는 `tracing-1.png`, `tracing-2.png` 등 LangSmith 캡처, 최대 10쪽 PDF가 필요합니다. 허구 데모의 trace뿐 아니라 제공 PDF·TF-IDF 검색·실제 LLM/Hybrid Judge를 사용한 live 실행도 SKALA에 전송했습니다. 최종 실행은 12개 작업 → 미달 대상 9개 → 미달 대상 8개로 재작업했으며, 인용 추적성·중립성·관점 커버리지는 통과했으나 독립 출처 부족으로 편향 통제는 미달입니다. 제출용 캡처는 별도로 준비해야 하며, FAISS 검색의 live 실행과 Retrieval Hit Rate/MRR은 아직 검증·측정하지 않았습니다.
 
 ## Contributors
 
