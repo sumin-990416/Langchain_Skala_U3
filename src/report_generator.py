@@ -160,7 +160,12 @@ def _write_charts(company_rows: list[Dict[str, Any]], images_dir: Path) -> tuple
     return bar_chart_path, donut_chart_path
 
 
-def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str] = None) -> str:
+def generate_pdf_report(
+    comparison_result: Any,
+    output_path: Optional[Path | str] = None,
+    report_quality: Optional[Any] = None,
+    source_records: Optional[list[Dict[str, Any]]] = None,
+) -> str:
     """판단 유보·부분 근거 부족·Agent 오류를 포함해 항상 5쪽 보고서를 생성합니다."""
     # WeasyPrint의 시스템 의존성이 없더라도 다른 모듈과 Markdown 생성은
     # 계속되도록 실제 PDF 생성 시점에만 불러옵니다.
@@ -211,6 +216,20 @@ def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str
                 "company": company["name"], **profile
             })
         source_ids.extend(company["source_ids"])
+    source_by_id = {
+        record.get("source_id", ""): record
+        for record in (source_records or []) if record.get("source_id")
+    }
+    source_rows = []
+    for source_id in _unique(source_ids)[:32]:
+        record = source_by_id.get(source_id, {})
+        source_rows.append({
+            "source_id": source_id,
+            "source_url": record.get("source_url", ""),
+            "publisher": record.get("publisher", ""),
+            "source_tier": record.get("source_tier") or record.get("evidence_grade", ""),
+            "source_type": record.get("source_type", "입력 문서"),
+        })
 
     raw_dir = base_dir / "data" / "raw"
     input_documents = sorted(path.name for path in raw_dir.iterdir() if path.is_file()) if raw_dir.exists() else []
@@ -232,7 +251,9 @@ def generate_pdf_report(comparison_result: Any, output_path: Optional[Path | str
         profiles_dict=profiles_dict,
         category_counts=category_counts,
         source_ids=_unique(source_ids)[:32],
+        source_rows=source_rows,
         input_documents=input_documents,
+        report_quality=report_quality,
         bar_chart_path=bar_chart_path.resolve().as_uri(),
         donut_chart_path=donut_chart_path.resolve().as_uri(),
     )

@@ -1,0 +1,59 @@
+# 외부 검색 허용목록 및 로컬 문서 내 출처 URL의 등급 분류 기준입니다.
+# Tier A: 규제기관·정부·국제기구·원 논문/특허·기업 공식 자료
+# Tier B: 대학·연구기관·산업 협회
+# Tier C: 주요 언론. 회사의 우월성 주장은 독립 출처로 교차 확인합니다.
+tiers:
+  A:
+    - sec.gov
+    - energy.gov
+    - nrel.gov
+    - eia.gov
+    - europa.eu
+    - iea.org
+    - ieee.org
+    - patents.google.com
+    - patentscope.wipo.int
+    - accure.net
+    - volytica.com
+    - volytica.de
+    - electra-vehicles.com
+    - electrabrain.ai
+  B:
+    - nature.com
+    - sciencedirect.com
+    - arxiv.org
+    - rmi.org
+    - energy-storage.news
+    - ul.com
+    - tuv.com
+  C:
+    - reuters.com
+    - bloomberg.com
+    - ft.com
+    - wsj.com
+    - cnbc.com
+    - techcrunch.com
+    - theinformation.com
+excluded_patterns:
+  - blogspot.
+  - medium.com
+  - wordpress.com
+  - substack.com
+  - tistory.com
+  - velog.io
+local_retrieval_max_l2_distance: 1.35
+company_official_domains:
+  - accure.net
+  - volytica.com
+  - volytica.de
+  - electra-vehicles.com
+  - electrabrain.ai
+company_official_domains_by_company:
+  accure:
+    - accure.net
+  volytica diagnostics:
+    - volytica.com
+    - volytica.de
+  electra vehicles:
+    - electra-vehicles.com
+    - electrabrain.ai

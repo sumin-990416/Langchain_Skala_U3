@@ -1,176 +1,99 @@
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Optional
+from pydantic import BaseModel, Field
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
 from ...schemas import ProfileResult
 from ..profile import calculate_profile_score, LLMProfileOutput, load_profile_config
-from ._evidence import check_profile_evidence, attach_evidence_check, profile_decision
+from ._evidence import check_profile_evidence, attach_evidence_check
 
 
-# 안정형 투자자가 중점적으로 확인할 실사 영역입니다.
-# 키워드는 검색된 근거를 영역별로 분류하는 용도로만 사용합니다.
+# 안정형 투자자가 중점적으로 확인할 실사 영역과 사전 공개된 상대 가중치입니다.
 STABILITY_CRITERIA: Dict[str, Dict[str, Any]] = {
     "safety_regulation": {
         "label": "안전·인증·규제 준수",
         "weight": 0.25,
-        "keywords": (
-            "안전", "규제", "인증", "표준", "열폭주", "화재", "safety",
-            "regulation", "regulatory", "certification", "thermal runaway",
-            "ul 9540", "ul9540", "iec 62619", "iso 26262", "un 38.3",
-            "battery regulation",
-        ),
+        "items": ("rsk_01",),
     },
     "financial_continuity": {
         "label": "투자단계·재무 지속성",
         "weight": 0.20,
-        "keywords": (
-            "비상장", "투자", "매출", "현금", "계약", "인수", "합병", "상장",
-            "seed", "series", "funding", "funded", "runway", "revenue",
-            "cash flow", "contract", "private company", "exit", "acquisition", "ipo",
-        ),
+        "items": ("fin_01", "fin_02"),
     },
     "data_rights": {
         "label": "데이터 이용권·개인정보",
         "weight": 0.15,
-        "keywords": (
-            "데이터 권리", "데이터 소유", "이용권", "동의", "라이선스",
-            "개인정보", "data right", "data ownership", "consent", "license",
-            "privacy", "gdpr", "data processing",
-        ),
+        "items": ("rsk_02",),
     },
     "product_liability": {
         "label": "제조물책임·보증·보험",
         "weight": 0.15,
-        "keywords": (
-            "제조물책임", "책임보험", "배상", "보증", "면책", "리콜",
-            "product liability", "liability insurance", "indemn", "warranty", "recall",
-        ),
+        "items": ("rsk_01",),
     },
     "intellectual_property": {
         "label": "특허·지식재산 방어력",
         "weight": 0.10,
-        "keywords": (
-            "특허", "지식재산", "영업비밀", "patent", "intellectual property",
-            "trade secret", "freedom to operate", "fto",
-        ),
+        "items": ("tech_03",),
     },
 }
 
-GRADE_SCORE = {"A": 95.0, "B": 80.0, "C": 60.0, "U": 30.0}
-UNKNOWN_CRITERION_SCORE = 40.0
+
+class StabilityCriterionAssessment(BaseModel):
+    score: Optional[Literal[0, 25, 50, 75, 100]] = Field(
+        description="근거로 판단할 수 없으면 null, 아니면 기준에 맞는 0/25/50/75/100"
+    )
+    evidence_ids: List[str] = Field(default_factory=list)
+    rationale: str
+    missing_information: str = ""
 
 
-def _get_field(item: Any, field_name: str, default: Any = None) -> Any:
-    """Pydantic 모델과 dict 형태의 근거를 모두 지원합니다."""
-    if isinstance(item, dict):
-        return item.get(field_name, default)
-    return getattr(item, field_name, default)
+class StabilityCustomAssessment(BaseModel):
+    safety_regulation: StabilityCriterionAssessment
+    financial_continuity: StabilityCriterionAssessment
+    data_rights: StabilityCriterionAssessment
+    product_liability: StabilityCriterionAssessment
+    intellectual_property: StabilityCriterionAssessment
 
 
-def _match_evidence(evidence: Iterable[Any], keywords: Sequence[str]) -> List[Any]:
-    """근거 본문을 안정형 세부 실사 영역에 분류합니다."""
-    normalized_keywords = tuple(keyword.casefold() for keyword in keywords)
-    matched: List[Any] = []
-    for item in evidence:
-        content = str(_get_field(item, "content", "")).casefold()
-        if any(keyword in content for keyword in normalized_keywords):
-            matched.append(item)
-    return matched
+class StabilityProfileOutput(LLMProfileOutput):
+    custom_assessment: StabilityCustomAssessment
 
 
-def _criterion_score(matched_evidence: Sequence[Any]) -> float:
-    """
-    근거 등급과 독립적인 source_id 수로 세부 실사 신뢰도를 산출합니다.
-
-    근거가 없는 항목은 0점으로 단정하지 않고 40점(미확인)을 적용하여,
-    추가 실사가 필요하다는 의미로 해석합니다.
-    """
-    if not matched_evidence:
-        return UNKNOWN_CRITERION_SCORE
-
-    grade_scores = [
-        GRADE_SCORE.get(str(_get_field(item, "evidence_grade", "U")).upper(), 30.0)
-        for item in matched_evidence
-    ]
-    unique_sources = {
-        str(_get_field(item, "source_id", "")).strip()
-        for item in matched_evidence
-        if str(_get_field(item, "source_id", "")).strip()
-    }
-    diversity_bonus = min(6.0, max(0, len(unique_sources) - 1) * 2.0)
-    return round(min(100.0, (sum(grade_scores) / len(grade_scores)) + diversity_bonus), 2)
-
-
-def _evidence_reliability(evidence: Sequence[Any]) -> float:
-    """전체 근거의 출처 등급과 출처 다양성을 평가합니다."""
-    if not evidence:
-        return 30.0
-
-    grade_average = sum(
-        GRADE_SCORE.get(str(_get_field(item, "evidence_grade", "U")).upper(), 30.0)
-        for item in evidence
-    ) / len(evidence)
-    unique_sources = {
-        str(_get_field(item, "source_id", "")).strip()
-        for item in evidence
-        if str(_get_field(item, "source_id", "")).strip()
-    }
-    source_diversity_score = min(100.0, 40.0 + len(unique_sources) * 15.0)
-    return round((grade_average * 0.75) + (source_diversity_score * 0.25), 2)
+def calculate_stability_custom_score(assessment: StabilityCustomAssessment, source_ids_by_item: Dict[str, List[str]]):
+    """검증된 루브릭 인용이 있는 안정형 기준만 가중 정규화합니다."""
+    scores, evidence_ids, missing, covered_weight = {}, {}, [], 0.0
+    for key, criterion in STABILITY_CRITERIA.items():
+        item = getattr(assessment, key)
+        allowed = {source_id for item_id in criterion["items"]
+                   for source_id in source_ids_by_item.get(item_id, [])}
+        cited = list(dict.fromkeys(item.evidence_ids))
+        valid = bool(cited) and set(cited).issubset(allowed) and item.score is not None
+        if valid:
+            scores[key] = float(item.score)
+            evidence_ids[key] = cited
+            covered_weight += criterion["weight"]
+        else:
+            missing.append(key)
+            evidence_ids[key] = []
+    total_weight = sum(c["weight"] for c in STABILITY_CRITERIA.values())
+    coverage = round(covered_weight / total_weight * 100, 2)
+    if coverage < 80.0:
+        return None, coverage, scores, evidence_ids, missing
+    score = sum(scores[k] * STABILITY_CRITERIA[k]["weight"] for k in scores) / covered_weight
+    return round(score, 2), coverage, scores, evidence_ids, missing
 
 
-def calculate_stability_custom_score(
-    evidence: Sequence[Any],
-) -> Tuple[float, Dict[str, float], Dict[str, List[str]]]:
-    """안정형 Agent의 커스텀 30% 점수와 항목별 근거 ID를 산출합니다."""
-    evidence_list = list(evidence)
-    breakdown: Dict[str, float] = {}
-    evidence_ids: Dict[str, List[str]] = {}
-    weighted_total = 0.0
-
-    for criterion_id, criterion in STABILITY_CRITERIA.items():
-        matched = _match_evidence(evidence_list, criterion["keywords"])
-        score = _criterion_score(matched)
-        breakdown[criterion_id] = score
-        evidence_ids[criterion_id] = sorted({
-            str(_get_field(item, "source_id", "")).strip()
-            for item in matched
-            if str(_get_field(item, "source_id", "")).strip()
-        })
-        weighted_total += score * float(criterion["weight"])
-
-    reliability = _evidence_reliability(evidence_list)
-    breakdown["evidence_reliability"] = reliability
-    evidence_ids["evidence_reliability"] = sorted({
-        str(_get_field(item, "source_id", "")).strip()
-        for item in evidence_list
-        if str(_get_field(item, "source_id", "")).strip()
-    })
-    weighted_total += reliability * 0.15
-
-    return round(weighted_total, 2), breakdown, evidence_ids
-
-
-def _format_stability_assessment(
-    breakdown: Dict[str, float], evidence_ids: Dict[str, List[str]]
-) -> str:
-    """계산된 실사 점수와 근거 ID를 LLM 프롬프트용 문자열로 만듭니다."""
+def _format_stability_assessment(source_ids_by_item: Dict[str, List[str]]) -> str:
+    """기준별로 인용 가능한 검증 근거 ID를 LLM에 전달합니다."""
     lines: List[str] = []
     for criterion_id, criterion in STABILITY_CRITERIA.items():
-        ids = evidence_ids.get(criterion_id, [])
+        ids = list(dict.fromkeys(
+            source_id for item_id in criterion["items"]
+            for source_id in source_ids_by_item.get(item_id, [])
+        ))
         source_text = ", ".join(ids) if ids else "미확인"
-        lines.append(
-            f"- {criterion['label']}: {breakdown[criterion_id]:.1f}점 "
-            f"(근거: {source_text})"
-        )
-
-    reliability_ids = evidence_ids.get("evidence_reliability", [])
-    reliability_sources = ", ".join(reliability_ids) if reliability_ids else "미확인"
-    lines.append(
-        f"- 근거 신뢰도: {breakdown['evidence_reliability']:.1f}점 "
-        f"(근거: {reliability_sources})"
-    )
+        lines.append(f"- {criterion_id} / {criterion['label']} (허용 항목: {', '.join(criterion['items'])}; 근거 ID: {source_text})")
     return "\n".join(lines)
 
 # rubric.yaml의 항목 ID 기준. 담당자가 평가 범위에 맞게 조정할 수 있습니다.
@@ -200,22 +123,9 @@ def run_stability_agent(state: Any) -> ProfileResult:
 
     common_score = calculate_profile_score(state["domain_scores"], weights)
 
-    # [2] 안정형 커스텀 실사 점수 30%
-    validated_evidence = list(state.get("validated_evidence", []))
-    confirmed_source_ids = set(evidence_check.source_ids)
-    confirmed_evidence = [
-        evidence
-        for evidence in validated_evidence
-        if evidence.source_id in confirmed_source_ids
-    ]
-    custom_score, stability_breakdown, stability_evidence_ids = (
-        calculate_stability_custom_score(confirmed_evidence)
-    )
-    final_score = round((common_score * 0.7) + (custom_score * 0.3), 2)
-
-    # [3] 근거 기반 안정형 투자의견 생성
+    # 세부 평가와 서술을 한 번의 구조화 호출로 생성합니다.
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-    structured_llm = llm.with_structured_output(LLMProfileOutput)
+    structured_llm = llm.with_structured_output(StabilityProfileOutput)
 
     evidence_text = evidence_check.evidence_text
 
@@ -225,20 +135,19 @@ def run_stability_agent(state: Any) -> ProfileResult:
 당신의 투자 성향 및 최우선 판단 기준:
 {focus}
 
-제공된 도메인 점수와 확인된 근거만으로 안정형 투자의견을 도출하세요.
+제공된 검증 근거로 안정형 커스텀 기준 점수를 평가하고 투자의견을 작성하세요.
 
 판단 원칙:
 1. 안전·규제, 재무 지속성, 데이터 권리, 제조물책임, 특허 방어력을 우선합니다.
 2. 제공된 근거 ID만 인용하고 없는 ID나 수치를 만들지 마세요.
-3. 근거가 없는 항목은 부정적 사실로 단정하지 말고 '미확인'으로 기록하세요.
-4. 회사 자체 주장과 독립 검증을 구분하고 A·B등급 근거를 우선하세요.
-5. 코드가 결정한 판정을 변경하지 말고 근거와 한계를 설명하세요.
-6. 미확인 수치를 추정하지 마세요."""),
+3. 근거가 없는 항목은 score=null, evidence_ids=[]로 두고 부정적 사실로 단정하지 마세요.
+4. 각 기준은 0/25/50/75/100의 단계로 평가합니다: 확인된 실패, 미흡·계획 수준,
+   일부 구체적 확인, 대부분 확인, 독립적·반복적으로 확인된 수준입니다.
+5. 해당 기준의 허용 항목에 속한 ID만 인용하고, 인용 ID와 rationale의 사실을 일치시키세요.
+6. 확인된 인용이 없으면 점수를 만들지 않습니다. 출처 등급을 점수로 바꾸지 마세요.
+7. 추천/최종 점수는 계산하지 말고 미확인 수치를 추정하지 마세요."""),
         ("user", """
 [기업명]: {company_name}
-[최종 산출 점수(공통 70% + 커스텀 30%)]: {final_score} / 100
-[안정형 커스텀 실사 점수]: {custom_score} / 100
-[코드가 결정한 판정]: {decision_text}
 [프로필 근거 충족률]: {coverage_text}%
 
 [안정형 세부 평가]
@@ -259,28 +168,43 @@ def run_stability_agent(state: Any) -> ProfileResult:
     current_company = state.get("current_company")
     company_name = current_company.name if current_company else "Unknown Startup"
 
-    result: LLMProfileOutput = chain.invoke({
+    result: StabilityProfileOutput = chain.invoke({
         "profile_name": profile_name,
         "focus": config["focus"],
         "company_name": company_name,
-        "final_score": final_score,
-        "custom_score": custom_score,
         "stability_assessment": _format_stability_assessment(
-            stability_breakdown, stability_evidence_ids
+            evidence_check.source_ids_by_item
         ),
-        "decision_text": profile_decision(final_score, evidence_check).value,
         "coverage_text": f"{evidence_check.coverage:.1f}",
         "domain_scores_text": domain_scores_text,
         "evidence_text": evidence_text,
     })
 
+    custom_score, custom_coverage, _, custom_ids, missing = calculate_stability_custom_score(
+        result.custom_assessment, evidence_check.source_ids_by_item
+    )
+    if custom_score is None:
+        held = evidence_check.hold_result(profile_name)
+        held.unknown_items.extend(f"안정형 세부 기준 미확인: {key}" for key in missing)
+        held.due_diligence_questions.extend(
+            getattr(result.custom_assessment, key).missing_information or f"{key} 관련 추가 자료 확인"
+            for key in missing
+        )
+        return held
+    final_score = round((common_score * 0.7) + (custom_score * 0.3), 2)
+
     return attach_evidence_check(ProfileResult(
         profile_name=profile_name,
         weighted_score=final_score,
         domain_contributions=result.domain_contributions.model_dump(),
-        supporting_evidence_ids=result.supporting_evidence_ids,
         contrary_evidence_ids=result.contrary_evidence_ids,
         unknown_items=result.unknown_items,
-        recommendation=result.recommendation,
+        recommendation=(
+            f"안정형 커스텀 점수 {custom_score:.1f}/100 (세부 기준 근거 충족 {custom_coverage:.0f}%). "
+            + result.recommendation
+        ),
         due_diligence_questions=result.due_diligence_questions,
+        supporting_evidence_ids=list(dict.fromkeys(
+            result.supporting_evidence_ids + [i for ids in custom_ids.values() for i in ids]
+        )),
     ), evidence_check)

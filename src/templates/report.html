@@ -270,7 +270,18 @@
         </div>
         <div class="section">
             <h2>Agent가 실제 인용한 근거 ID</h2>
-            {% if source_ids %}<ol class="reference-list">{% for source_id in source_ids %}<li>[{{ source_id }}] 입력 문서에서 검색·검증된 근거</li>{% endfor %}</ol>{% else %}<p>유효하게 연결된 근거 ID가 없어 모든 기업을 판단 유보로 표시했다.</p>{% endif %}
+            {% if source_rows %}<ol class="reference-list">{% for source in source_rows %}<li>[{{ source.source_id }}] {% if source.source_url %}<a href="{{ source.source_url }}">{{ source.publisher or source.source_url }}</a> (Tier {{ source.source_tier }}){% else %}{{ source.source_type }} 근거{% endif %}</li>{% endfor %}</ol>{% else %}<p>유효하게 연결된 근거 ID가 없어 모든 기업을 판단 유보로 표시했다.</p>{% endif %}
+        </div>
+        <div class="section">
+            <h2>보고서 품질 평가</h2>
+            {% if report_quality %}
+            <p><strong>최종 판정:</strong> {{ "통과" if report_quality.overall_passed else "미달" }}</p>
+            <ul>
+                <li>Groundedness: {{ "통과" if report_quality.groundedness.passed else "미달" }} — {{ report_quality.groundedness.reason }}</li>
+                <li>중립성: {{ "통과" if report_quality.neutrality.passed else "미달" }} — {{ report_quality.neutrality.reason }}</li>
+                <li>편향 통제: {{ "통과" if report_quality.bias_control.passed else "미달" }} — {{ report_quality.bias_control.reason }}</li>
+            </ul>
+            {% else %}<p class="note">품질 Judge 판정 미생성</p>{% endif %}
         </div>
         <div class="section">
             <h2>보고서 해석 범위</h2>

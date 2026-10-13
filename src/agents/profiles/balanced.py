@@ -174,14 +174,16 @@ def run_balanced_agent(state: Any) -> ProfileResult:
     custom_score = calculate_balanced_custom_score({
         name: item["score"] for name, item in criterion_results.items()
     })
-    if custom_score is None:
-        missing = [name for name, item in criterion_results.items() if item["score"] is None]
-        covered_weight = sum(
+    coverage = round(
+        sum(
             CRITERION_WEIGHTS[name]
             for name, item in criterion_results.items()
             if item["score"] is not None
-        )
-        coverage = round(covered_weight * 100, 2)
+        ) * 100,
+        2,
+    )
+    if custom_score is None:
+        missing = [name for name, item in criterion_results.items() if item["score"] is None]
         return ProfileResult(
             profile_name=profile_name,
             weighted_score=None,
@@ -242,7 +244,7 @@ def run_balanced_agent(state: Any) -> ProfileResult:
         profile_name=profile_name,
         weighted_score=final_score,
         decision=decision,
-        evidence_coverage=100.0,
+        evidence_coverage=coverage,
         result_category=(
             ResultCategory.PARTIAL_EVIDENCE
             if unknown_items

@@ -5,14 +5,15 @@
 
 ## 1. 프로젝트 한 줄 소개
 
-배터리 AI 스타트업의 공개자료를 RAG로 검색하고, 동일한 근거를 **기술·안정·성장·균형·사업성의 5개 투자 관점**으로 병렬 평가하여 근거 기반 투자보고서를 생성합니다.
+배터리 AI 스타트업의 공개자료를 RAG로 검색하고, Orchestrator가 근거 상태에 따라 평가 작업을 계획한 뒤 **기술·안정·성장·균형·사업성 투자 관점**의 Worker를 병렬 실행해 투자보고서를 생성합니다.
 
 이 프로젝트의 핵심은 단순히 LLM에게 투자 여부를 질문하는 것이 아닙니다.
 
 1. 평가에 사용할 근거를 먼저 수집합니다.
 2. 공통 기준과 투자자 유형별 기준을 분리해 평가합니다.
 3. 근거가 부족하면 억지로 점수를 만들지 않고 `판단 유보`로 남깁니다.
-4. 최종 결과를 5페이지 이내의 차트 포함 PDF로 출력합니다.
+4. 로컬 근거가 부족한 질문은 허용 출처 정책에 따라 웹 검색하고, 보고서를 Groundedness·중립성·편향 통제 기준으로 평가합니다.
+5. 최종 결과를 차트 포함 PDF와 Markdown으로 출력합니다.
 
 ---
 
@@ -26,7 +27,7 @@
 - 매출, 계약, 고객 유지율처럼 비상장기업이 공개하지 않는 정보가 많습니다.
 - 기술력이 높더라도 안정성 또는 사업성이 부족할 수 있습니다.
 
-따라서 하나의 종합 프롬프트가 모든 판단을 수행하면 관점이 섞이고, 공개되지 않은 정보를 추정할 위험이 있습니다. 이를 해결하기 위해 **근거 수집과 투자 판단을 분리**하고, 투자 판단을 다시 **5개 전문 Agent**로 분할했습니다.
+따라서 하나의 종합 프롬프트가 모든 판단을 수행하면 관점이 섞이고, 공개되지 않은 정보를 추정할 위험이 있습니다. 근거 수집과 투자 판단을 분리하고, Orchestrator가 실제로 확인된 영역을 보고 필요한 전문 Agent 작업을 동적으로 계획합니다.
 
 ---
 
@@ -65,7 +66,7 @@ Agent 최종점수 = 공통 프로필 점수 × 70%
 
 ### 차별점 3. 근거 부족을 0점으로 처리하지 않음
 
-공개자료가 없다는 것은 성과가 나쁘다는 뜻이 아닙니다. 따라서 미확인 항목을 0점으로 바꾸지 않습니다.
+공개자료가 없다는 것은 성과가 나쁘다는 뜻이 아닙니다. Profile Agent의 근거 검사에서 미확인 항목을 0점으로 바꾸지 않습니다.
 
 | 근거 상태 | 처리 방식 |
 |---|---|
@@ -89,13 +90,17 @@ flowchart TD
     D --> E[기업별 평가 질문 생성]
     E --> F[관련 근거 Top-K 검색]
     F --> G[근거 검증]
-    G --> H[공통 5개 영역 평가]
-    H --> I{Send: 5개 Agent 병렬 실행}
-    I --> T[기술중심형]
-    I --> S[안정형]
-    I --> R[성장형]
-    I --> B2[균형형]
-    I --> M[사업성중심형]
+    G --> Q{질문별 근거 충분?}
+    Q -->|부족·검색키 있음| W[허용 출처 Web Research]
+    W --> G
+    Q -->|확인 완료 또는 검색 생략| H[공통 평가]
+    H --> P[Orchestrator 작업 계획 저장]
+    P --> I{State 기반 Dynamic Fan-out}
+    I --> T[선택된 Profile Worker]
+    I --> S[선택된 Profile Worker]
+    I --> R[선택된 Profile Worker]
+    I --> B2[선택된 Profile Worker]
+    I --> M[선택된 Profile Worker]
     T --> J[기업별 결과 종합]
     S --> J
     R --> J
@@ -105,6 +110,9 @@ flowchart TD
     K -->|있음| E
     K -->|없음| L[기업 비교]
     L --> N[Markdown 및 PDF 보고서]
+    N --> J[품질 평가: Groundedness·중립성·편향 통제]
+    J -->|미달, 최대 2회| N
+    J -->|통과 또는 재작성 한도| END[종료]
 ```
 
 ### 기술별 역할
@@ -112,7 +120,7 @@ flowchart TD
 | 기술 | 역할 |
 |---|---|
 | LangChain | 문서 로딩, 청킹, 임베딩, FAISS 검색, 프롬프트 및 구조화 출력 |
-| LangGraph | State 관리, 실행 순서, 조건 분기, 기업 반복, 5개 Agent 병렬 실행 |
+| LangGraph | State 관리, 근거 기반 조건 분기, Orchestrator 계획, 동적 병렬 실행, 재개 가능한 실행 체크포인트 |
 | Pydantic | Evidence, ProfileResult, CompanyResult 등 결과 스키마 검증 |
 | FAISS | 평가 질문과 관련된 문서 청크 검색 |
 | ReportLab / WeasyPrint | 차트 및 PDF 투자보고서 출력 |
@@ -138,6 +146,8 @@ text_splitter = RecursiveCharacterTextSplitter(
 )
 split_docs = text_splitter.split_documents(docs)
 ```
+
+문서의 근거 등급은 자료 본문에서 추출한 URL의 도메인을 `configs/source_policy.yaml`과 대조해 정합니다. URL이 없거나 허용목록에 없거나 여러 티어가 섞여 있으면 `U`(미확인)로 두고 평가 근거로 통과시키지 않습니다. 벡터 인덱스가 없을 때 예시 기업 정보를 대신 채우지 않으며, 먼저 실제 PDF/TXT 자료를 적재해야 합니다.
 
 발표 포인트는 “PDF 전체를 LLM에 넣는 것이 아니라, 의미 검색이 가능한 500자 단위 청크로 나눈다”는 것입니다. 50자 overlap은 청크 경계에서 문맥이 끊기는 문제를 줄입니다.
 
@@ -190,38 +200,46 @@ growth_evaluation = (
 class InvestmentAgentState(TypedDict):
     current_company: Optional[Company]
     validated_evidence: List[Evidence]
+    worker_tasks: List[WorkerTask]
+    web_research_attempts: int
     domain_scores: Dict[Domain, float]
     profile_results: Annotated[List[ProfileResult], reset_or_add]
     company_results: Annotated[List[CompanyResult], operator.add]
     final_comparison: Optional[ComparisonResult]
+    report_quality: Optional[ReportQuality]
+    report_revision_count: int
+    trace_id: str
 ```
 
-각 노드는 전체 객체를 직접 수정하지 않고 필요한 필드만 반환합니다. `profile_results`의 reducer는 병렬 실행된 다섯 Agent 결과를 하나의 리스트로 합칩니다.
+각 노드는 필요한 필드만 반환합니다. 작업 계획과 재개에 필요한 제어 상태를 근거·결과 payload와 구분합니다. `trace_id`는 LangSmith 실행 메타데이터와 연결되고 `MemorySaver`는 같은 프로세스에서 실행을 이어가도록 체크포인트를 보관합니다. 체크포인트는 현재 메모리 기반이므로 프로세스 종료 뒤 복구하려면 영속 저장소가 필요합니다. 전체 근거 청크를 State에 보관하면 메모리 사용량이 커지므로 운영 시에는 문서 ID와 외부 저장 위치를 기록하는 편이 적합합니다.
 
-#### 2. `Send`를 이용한 5개 Agent 병렬 실행
+#### 2. Orchestrator 계획 후 `Send`로 동적 Fan-out
 
 [`src/graph.py`](src/graph.py)의 `route_to_profiles()`가 프로필마다 하나의 `Send`를 만듭니다.
 
 ```python
-def route_to_profiles(state: InvestmentAgentState):
+def plan_worker_tasks(state):
+    # 검증된 영역과 profiles.yaml 가중치를 바탕으로 Worker 목록을 State에 저장
+    return {"worker_tasks": planned_tasks}
+
+def route_to_profiles(state):
     return [
         Send("profile_agent", {
-            "profile_name": profile,
-            "domain_scores": state.get("domain_scores", {}),
-            "validated_evidence": state.get("validated_evidence", []),
-            "current_company": state.get("current_company"),
+            "profile_name": task.profile_name,
+            "validated_evidence": state["validated_evidence"],
+            "domain_scores": state["domain_scores"],
         })
-        for profile in get_all_profiles()
+        for task in state["worker_tasks"]
     ]
 ```
 
-이 코드가 공통 점수와 동일한 검증 근거를 기술·안정·성장·균형·사업성 Agent에 동시에 전달합니다. Agent별 결과는 앞서 정의한 reducer로 다시 모입니다.
+Orchestrator가 State에 기록한 작업만 `Send`합니다. 어떤 Worker를 실행할지는 평가 대상과 확보된 근거 영역에 따라 달라집니다. 결과는 `profile_results` reducer로 모입니다.
 
 #### 3. 조건 분기와 기업 반복
 
 ```python
 workflow.add_conditional_edges(
-    "score_common",
+    "plan_worker_tasks",
     route_to_profiles,
     ["profile_agent"],
 )
@@ -236,9 +254,7 @@ workflow.add_conditional_edges(
 )
 ```
 
-첫 번째 조건부 edge는 5개 Agent 병렬 평가를 시작합니다. 두 번째 조건부 edge는 아직 평가하지 않은 기업이 있으면 `select_company`로 돌아가고, 모든 기업이 끝나면 비교 단계로 이동합니다.
-
-근거 재검색 분기도 Graph에 정의되어 있지만, 현재 `route_evidence_check()`가 임시로 항상 충분하다고 처리합니다. 발표에서는 **조건 분기 구조는 구현했고, 근거 충분성에 따른 자동 질의 재작성은 개선 과제**라고 구분해 설명합니다.
+첫 번째 조건부 edge는 State에 계획된 Worker만 병렬 실행합니다. 두 번째 조건부 edge는 기업 반복을 제어합니다. 근거 커버리지가 기준보다 낮으면 Tavily 검색을 한 번 실행한 뒤 같은 검증 노드로 돌아옵니다.
 
 ---
 
@@ -296,7 +312,23 @@ Agent는 입력된 근거만 사용하도록 제한되며, 인용한 문장이 �
 
 ### 병렬 Agent 실행
 
-공통 평가가 끝나면 LangGraph의 `Send`를 사용해 동일한 근거와 공통 점수를 5개 Agent에 전달합니다. 각 Agent 결과는 reducer를 통해 `profile_results`에 누적됩니다.
+Orchestrator가 확인된 근거 영역과 프로필별 가중치를 보고 `WorkerTask` 목록을 State에 저장합니다. `Send`는 이 목록에 포함된 Worker만 병렬 실행하며, 각 결과는 reducer를 통해 `profile_results`에 누적됩니다.
+
+### 근거 부족 시 외부 검색
+
+로컬 청크 개수가 아니라, 공통 채점에서 실제 인용 검증까지 통과한 항목을 기준으로 판단합니다. 채점 커버리지가 75% 미만이거나 사업성·성장·안정형의 핵심 항목(`fin_01`, `fin_02`, `team_01`, `mkt_01`, `rsk_01`, `rsk_02`)이 미채점이면 `TAVILY_API_KEY`가 설정된 경우 해당 누락 항목만 최대 1회 외부 검색합니다. 검색 뒤에는 같은 검증·채점 단계를 다시 거칩니다. 검색 결과는 [`configs/source_policy.yaml`](configs/source_policy.yaml)의 Tier A/B/C 허용 도메인으로 다시 필터링합니다. 개인 블로그·출처 불명 페이지는 허용목록에 포함되지 않습니다. 기업 공식 자료는 제품·투자유치 등 사실 확인에 사용하며, 우월성 주장은 독립 출처와 함께 검토하도록 품질 심사 프롬프트에서 다룹니다.
+
+### 보고서 품질 평가
+
+보고서 생성 뒤 품질 Judge가 아래 세 항목만 평가합니다. 관점 커버리지는 평가하지 않습니다.
+
+| 항목 | 확인 내용 |
+|---|---|
+| Groundedness | 핵심 주장이 검증 근거로 뒷받침되고 출처에 추적되는가 |
+| 중립성 | 회사 주장과 독립 근거를 구분하고 단정적 우열 표현을 피하는가 |
+| 편향 통제 | 우호·비우호 근거의 선택적 누락이나 홍보 문구의 무비판적 반복이 없는가 |
+
+미달 시 피드백을 반영해 보고서를 다시 만들며, 재작성은 최대 2회입니다.
 
 ### 기업 반복
 
@@ -356,16 +388,17 @@ class ProfileResult(BaseModel):
 
 ```text
 main.py                          전체 실행 진입점
-configs/profiles.yaml            5개 Agent의 영역 가중치와 평가 초점
+configs/profiles.yaml            Profile Worker의 영역 가중치와 평가 초점
 configs/rubric.yaml              공통 평가 질문
+configs/source_policy.yaml       웹 검색 허용 출처 및 로컬 검색 기준
 src/schemas.py                   State 및 구조화 결과 모델
 src/graph.py                     LangGraph 노드·분기·병렬·반복 연결
 src/rag/ingest.py                문서 로딩, 청킹, 임베딩
 src/rag/vector_store.py          FAISS 저장 및 검색
-src/agents/profile.py            5개 Agent 라우팅
+src/agents/profile.py            Profile Worker 라우팅
 src/agents/profiles/             Agent별 독립 30% 평가
 src/agents/profiles/_evidence.py 공통 근거 충족 검사
-src/nodes/core.py                검색, 공통 평가, 종합, 보고서 노드
+src/nodes/core.py                검색, 검증, 동적 계획, 종합, 품질평가 노드
 src/report_generator.py          차트와 PDF 생성
 src/templates/report.html        PDF 보고서 템플릿
 output/                          최종 Markdown/PDF 보고서
@@ -380,7 +413,7 @@ uv sync
 uv run python main.py
 ```
 
-프로젝트 루트의 `.env`에는 `OPENAI_API_KEY`가 필요합니다. 기존 `data/raw` 문서를 그대로 사용할 경우 파일 선택 질문에 `n`을 입력합니다.
+프로젝트 루트의 `.env`에는 `OPENAI_API_KEY`가 필요합니다. 근거 부족 시 웹 검색을 사용하려면 `TAVILY_API_KEY`도 설정합니다. 해당 키가 없으면 외부 검색을 생략합니다. `LLM_GENERATOR_MODEL`과 `LLM_JUDGE_MODEL`로 보고서 수정·품질평가 모델을 각각 지정할 수 있으며 기본값은 `gpt-4o-mini`입니다. 기존 `data/raw` 문서를 그대로 사용할 경우 파일 선택 질문에 `n`을 입력합니다.
 
 ```text
 output/final_multi_agent_report.md
@@ -394,22 +427,22 @@ output/final_report.pdf
 ### 구현 완료
 
 - 문서 로딩·청킹·E5 임베딩·FAISS 저장 및 검색
-- LangGraph 기반 기업 반복과 5개 Agent 병렬 실행
+- LangGraph Orchestrator의 State 기반 Dynamic Fan-out과 기업 반복
 - 프로필별 영역 가중치와 독립 세부평가
 - 공통 70% + 유형별 30% 결합
 - 근거 부족 시 점수 미산출 및 판단 유보
+- 허용 출처 정책에 따른 외부 검색과 출처 링크 보고
+- Groundedness·중립성·편향 통제 Judge와 제한된 재작성 루프
 - 판단 유보를 포함한 기업 종합
 - Markdown 및 차트 포함 PDF 보고서 생성
 
-### 추가 개선
+### 남은 한계
 
-- 현재 임시 공통 영역점수를 실제 근거 기반 항목별 채점으로 교체
-- 공통 근거 검증 결과에 따른 질의 재작성·재검색 루프 완성
-- 출처 URL·페이지·claim ID를 보고서까지 연결
-- Agent별 산식과 임계값에 대한 평가 데이터 구축
-- 전체 Graph와 PDF 결과에 대한 자동화 테스트 추가
+- `score_common()`은 rubric 항목별 검증 근거를 구조화 출력으로 평가합니다. 실제 점수는 출처 ID가 연결된 항목만 집계하며, 근거가 없거나 채점 호출에 실패하면 점수를 만들지 않습니다.
+- 근거 등급의 세분화, source URL/page와 claim ID 연결, 회사 공식 주장에 대한 독립 검증 범위는 계속 개선해야 합니다.
+- 체크포인트가 메모리 기반이라 프로세스가 종료되면 실행 복구가 되지 않습니다.
 
-현재 `score_common()`의 영역점수는 파이프라인 연결 검증을 위한 임시값입니다. 따라서 개별 숫자를 실제 투자결론으로 과장하기보다, **근거 기반 Multi-Agent 평가 구조와 판단 유보 처리 방식**을 핵심 개발 성과로 설명합니다.
+현재 개발 성과는 **근거 연결형 공통 채점, Orchestrator의 동적 작업 분배, 허용 출처 검색 경로, Profile Agent의 근거 기반 판단 유보, 보고서 품질 루프**입니다. 점수는 공개근거와 rubric에 한정된 분석 결과이며 실사·투자 판단을 대체하지 않습니다.
 
 ---
 
@@ -436,6 +469,14 @@ output/final_report.pdf
 보고서까지 판단 유보와 미확인 항목을 표현할 수 있어야 평가 로직이 완성된다는 점을 배웠습니다.
 
 ---
+
+### 점수 및 근거 산출 원칙
+
+- 공통 프로필 점수는 실제 산출된 도메인만 대상으로 가중치를 재정규화합니다. 미산출 도메인을 0점으로 간주하지 않으며, 근거 충족률은 별도 HOLD 기준으로 유지합니다.
+- 사업성형·안정형 커스텀 점수는 검증 단계에서 항목별로 확인된 근거 ID를 인용한 평가만 반영합니다. 임의 키워드 개수, 출처 등급 점수화, 미확인 항목의 고정 점수는 사용하지 않습니다.
+- 세부 평가 근거 커버리지가 80% 미만이거나 인용 ID가 해당 루브릭 항목과 맞지 않으면 점수를 산출하지 않고 판단을 유보합니다.
+- 커스텀 점수 기준은 단계형 평가(0/25/50/75/100)로 프롬프트에 명시되어 있습니다. 실제 투자 기준에 맞는 단계와 가중치는 프로젝트 사용 전에 팀 검토가 필요합니다.
+- 문서의 원문 URL은 PDF/TXT에서 근거 ID와 명확히 연결되는 경우에만 보고서 참고문헌에 표시합니다. 여러 URL이 모호하게 섞인 페이지는 연결을 추정하지 않습니다.
 
 ## 13. 발표 결론
 

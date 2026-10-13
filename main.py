@@ -4,6 +4,7 @@ warnings.filterwarnings("ignore")
 import os
 import sys
 import shutil
+import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -121,6 +122,7 @@ def main():
     
     # 4. Multi-Agent Graph 구동
     console.print("[bold yellow]🤖 4단계: Multi-Agent 투자 심사 진행[/bold yellow]")
+    trace_id = uuid.uuid4().hex
     initial_state = InvestmentAgentState(
         selected_companies=[],
         current_index=0,
@@ -132,6 +134,9 @@ def main():
         evidence_coverage=0.0,
         retry_count={},
         unknown_items=[],
+        worker_tasks=[],
+        web_research_attempts=0,
+        source_rejections=[],
         domain_scores={},
         profile_results=[],
         company_result=None,
@@ -140,6 +145,9 @@ def main():
         used_sources=[],
         report_draft="",
         report_errors=[],
+        report_quality=None,
+        report_revision_count=0,
+        trace_id=trace_id,
         errors=[]
     )
     
@@ -152,7 +160,13 @@ def main():
         
         task_id = progress.add_task("[cyan]에이전트 네트워크 준비 중...", total=None)
         
-        for event in graph.stream(initial_state):
+        for event in graph.stream(
+            initial_state,
+            config={
+                "configurable": {"thread_id": trace_id},
+                "metadata": {"trace_id": trace_id},
+            },
+        ):
             for node_name, node_state in event.items():
                 if node_name == "load_inputs":
                     companies = node_state.get("selected_companies", [])
@@ -167,8 +181,15 @@ def main():
                         console.print(f"\n🎯 [bold yellow]타겟 기업 설정됨:[/bold yellow] {c.name}")
                         
                 elif node_name == "profile_agent":
-                    console.print(f" ➔ 👥 5대 프로필 에이전트 병렬(Parallel) 분석 완료")
+                    console.print(" ➔ 👥 계획된 프로필 Worker 분석 완료")
                     progress.update(task_id, description=f"[cyan]다중 관점 평가 종합 중...[/cyan]")
+
+                elif node_name == "web_research":
+                    console.print(" ➔ 🌐 부족 근거 대상 허용 출처 웹 검색 완료")
+
+                elif node_name == "plan_worker_tasks":
+                    tasks = node_state.get("worker_tasks", [])
+                    console.print(f" ➔ 🧭 Orchestrator 작업 계획: {len(tasks)}개 Worker")
                     
                 elif node_name == "synthesize_company":
                     res = node_state.get("company_result")
@@ -192,6 +213,14 @@ def main():
 
                 elif node_name == "validate_report":
                     final_report_errors = node_state.get("report_errors", final_report_errors)
+                    quality = node_state.get("report_quality")
+                    if quality:
+                        console.print(
+                            " ➔ 🧪 보고서 품질 평가: "
+                            f"Groundedness={quality.groundedness.passed}, "
+                            f"중립성={quality.neutrality.passed}, "
+                            f"편향 통제={quality.bias_control.passed}"
+                        )
                     
                 elif node_name in ["build_questions", "retrieve_evidence", "score_common"]:
                     progress.update(task_id, description=f"[magenta]에이전트 노드 통과: {node_name}[/magenta]")

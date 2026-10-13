@@ -77,12 +77,19 @@ def load_profile_config(profile_id: str) -> Dict[str, Any]:
     return {"name": display_name, "weights": defaults[display_name]["weights"], "focus": defaults[display_name]["focus"]}
 
 def calculate_profile_score(domain_scores: Dict[Domain, float], weights: Dict[str, float]) -> float:
-    """공통 점수와 가중치를 곱해 최종 점수를 계산"""
+    """산출 가능한 영역의 가중치 합으로 정규화해 공통 점수를 계산합니다."""
     total_score = 0.0
+    available_weight = 0.0
     for domain, score in domain_scores.items():
-        weight = weights.get(domain.value, 0.2)
+        domain_name = domain.value if isinstance(domain, Domain) else str(domain)
+        weight = float(weights.get(domain_name, 0.0))
+        if weight <= 0:
+            continue
         total_score += score * weight
-    return round(total_score, 2)
+        available_weight += weight
+    if available_weight == 0:
+        raise ValueError("공통 점수를 계산할 수 있는 평가 영역이 없습니다.")
+    return round(total_score / available_weight, 2)
 
 def profile_agent_node(state: ProfileSendState) -> Dict[str, Any]:
     """

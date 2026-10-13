@@ -126,6 +126,7 @@ class ProfileEvidenceCheck:
     has_conflict: bool
     evidence_text: str
     source_ids: List[str]
+    source_ids_by_item: Dict[str, List[str]]
     min_coverage: float
 
     def hold_result(self, profile_name: str) -> ProfileResult:
@@ -175,6 +176,7 @@ def check_profile_evidence(
             answers[key] = answer
 
     confirmed = set()
+    source_ids_by_item: Dict[str, List[str]] = {}
     unknown_items, questions, excerpts, source_ids = [], [], [], []
     # 중복 응답의 마지막 답이 앞선 상충 표시를 지우지 않도록 모두 보존한다.
     has_conflict = bool(conflicting_ids)
@@ -204,9 +206,10 @@ def check_profile_evidence(
             unknown_items.append(f"{key} ({item['question']}): {reason}")
             questions.append(item["question"])
         # 근거 확인에 실제 사용한 유효한 인용만 후속 의견 생성에 전달한다.
-        for citation in valid:
+        for citation in valid if key in confirmed else []:
             ev = evidence[citation.evidence_ref]
             source_ids.append(ev.source_id)
+            source_ids_by_item.setdefault(key, []).append(ev.source_id)
             excerpts.append(f"- [Item: {key}, Source: {ev.source_id}, 등급: {ev.evidence_grade}] {citation.quote}")
 
     total_weight = sum(item["weight"] for item in items.values())
@@ -217,7 +220,11 @@ def check_profile_evidence(
         coverage=coverage, unknown_items=unknown_items,
         due_diligence_questions=list(dict.fromkeys(questions)), missing_critical=missing_critical,
         has_conflict=has_conflict, evidence_text="\n".join(dict.fromkeys(excerpts)),
-        source_ids=list(dict.fromkeys(source_ids)), min_coverage=min_coverage,
+        source_ids=list(dict.fromkeys(source_ids)),
+        source_ids_by_item={
+            key: list(dict.fromkeys(ids)) for key, ids in source_ids_by_item.items()
+        },
+        min_coverage=min_coverage,
     )
 
 

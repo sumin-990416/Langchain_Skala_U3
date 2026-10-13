@@ -46,6 +46,29 @@ class Evidence(BaseModel):
     source_id: str = Field(default="", description="근거 식별자")
     evidence_grade: str = Field(default="U", description="근거 등급 (A, B, C, U)")
     is_direct: bool = Field(default=False, description="기업과 직접 연관된 근거 여부")
+    source_url: str = Field(default="", description="외부 출처 URL")
+    publisher: str = Field(default="", description="발행 기관 또는 매체")
+    published_at: str = Field(default="", description="발행일")
+    source_tier: str = Field(default="", description="허용 출처 등급 (A/B/C)")
+    is_official: bool = Field(default=False, description="기업/기관 공식 출처 여부")
+    retrieval_score: Optional[float] = Field(default=None, description="FAISS L2 거리 (낮을수록 관련성 높음)")
+
+class WorkerTask(BaseModel):
+    task_id: str
+    profile_name: str
+    reason: str
+    domains: List[str] = Field(default_factory=list)
+
+class QualityCriterion(BaseModel):
+    passed: bool
+    reason: str
+
+class ReportQuality(BaseModel):
+    groundedness: QualityCriterion
+    neutrality: QualityCriterion
+    bias_control: QualityCriterion
+    overall_passed: bool
+    revision_feedback: List[str] = Field(default_factory=list)
 
 class ProfileResult(BaseModel):
     profile_name: str = Field(description="기술·안정·성장·균형·사업 중 하나")
@@ -79,6 +102,7 @@ class CompanyResult(BaseModel):
     domain_scores: Dict[Domain, float]
     evidence_coverage: float
     profile_results: List[ProfileResult]
+    worker_plan: List[WorkerTask] = Field(default_factory=list, description="Orchestrator가 계획한 실제 Worker 작업")
     average_score: Optional[float] = Field(
         default=None, ge=0, le=100, allow_inf_nan=False,
         description="산출된 프로필 점수의 평균. 모두 미산출이면 None"
@@ -113,6 +137,9 @@ class InvestmentAgentState(TypedDict):
     evidence_coverage: float
     retry_count: Dict[str, int]
     unknown_items: List[str]
+    worker_tasks: List[WorkerTask]
+    web_research_attempts: int
+    source_rejections: List[str]
     
     domain_scores: Dict[Domain, float]
     profile_results: Annotated[List[ProfileResult], reset_or_add]
@@ -123,4 +150,7 @@ class InvestmentAgentState(TypedDict):
     used_sources: List[str]
     report_draft: str
     report_errors: List[str]
+    report_quality: Optional[ReportQuality]
+    report_revision_count: int
+    trace_id: str
     errors: List[str]
