@@ -90,21 +90,29 @@ flowchart TD
     E --> F[관련 근거 Top-K 검색]
     F --> G[근거 검증]
     G --> H[공통 5개 영역 평가]
-    H --> I{Send: 5개 Agent 병렬 실행}
-    I --> T[기술중심형]
-    I --> S[안정형]
-    I --> R[성장형]
-    I --> B2[균형형]
-    I --> M[사업성중심형]
-    T --> J[기업별 결과 종합]
-    S --> J
-    R --> J
-    B2 --> J
-    M --> J
-    J --> K{남은 기업?}
+    H --> O[Orchestrator: 프로필 작업 계획을 State에 저장]
+    O --> FAN{계획된 작업만 Send로 병렬 실행}
+    FAN --> T[기술중심형]
+    FAN --> S[안정형]
+    FAN --> R[성장형]
+    FAN --> B2[균형형]
+    FAN --> M[사업성중심형]
+    T --> SYN[기업별 결과 종합]
+    S --> SYN
+    R --> SYN
+    B2 --> SYN
+    M --> SYN
+    SYN --> K{남은 기업?}
     K -->|있음| E
     K -->|없음| L[기업 비교]
     L --> N[Markdown 및 PDF 보고서]
+    N --> Q[Hybrid 품질 평가]
+    Q -->|통과| Z[END]
+    Q -->|미달·재시도 가능| RP[Orchestrator: 영향받은 프로필 재작업 계획]
+    RP --> RW[선택된 보고서 재작업 Worker 병렬 실행]
+    RW --> RS[수정 결과 Synthesizer 집계]
+    RS --> N
+    Q -->|재시도 상한 도달| Z
 ```
 
 ### 기술별 역할
@@ -112,7 +120,7 @@ flowchart TD
 | 기술 | 역할 |
 |---|---|
 | LangChain | 문서 로딩, 청킹, 임베딩, FAISS 검색, 프롬프트 및 구조화 출력 |
-| LangGraph | State 관리, 실행 순서, 조건 분기, 기업 반복, 5개 Agent 병렬 실행 |
+| LangGraph | State 관리, 실행 순서, 조건 분기, 기업 반복, Orchestrator 계획 기반 Worker 병렬 실행 |
 | Pydantic | Evidence, ProfileResult, CompanyResult 등 결과 스키마 검증 |
 | FAISS | 평가 질문과 관련된 문서 청크 검색 |
 | ReportLab / WeasyPrint | 차트 및 PDF 투자보고서 출력 |
@@ -191,37 +199,57 @@ class InvestmentAgentState(TypedDict):
     current_company: Optional[Company]
     validated_evidence: List[Evidence]
     domain_scores: Dict[Domain, float]
+    profile_task_plan: List[ProfileTask]
     profile_results: Annotated[List[ProfileResult], reset_or_add]
+    report_evidence: Annotated[List[ReportEvidence], operator.add]
+    report_quality_verdict: Optional[ReportQualityVerdict]
+    report_review_plan: List[ReportReviewTask]
+    report_corrections: Annotated[List[ReportCorrection], reset_or_add_corrections]
+    quality_retry_count: int
+    quality_max_retries: int
+    trace_id: str
     company_results: Annotated[List[CompanyResult], operator.add]
     final_comparison: Optional[ComparisonResult]
 ```
 
-각 노드는 전체 객체를 직접 수정하지 않고 필요한 필드만 반환합니다. `profile_results`의 reducer는 병렬 실행된 다섯 Agent 결과를 하나의 리스트로 합칩니다.
+각 노드는 전체 객체를 직접 수정하지 않고 필요한 필드만 반환합니다. Orchestrator는 설정된 프로필을 구조화된 `profile_task_plan`으로 State에 기록한 뒤, Worker 결과를 `profile_results` reducer가 하나의 리스트로 합칩니다. 계획 노드에서 결과 리스트를 초기화하므로 기업별 결과가 섞이지 않습니다.
 
-#### 2. `Send`를 이용한 5개 Agent 병렬 실행
+Worker 실패는 **계속 진행(Continue)** 으로 처리합니다. 실패한 Worker도 `task_id`, `EXECUTION_ERROR`, 오류 요약을 포함한 구조화 결과를 반환하며, 다른 Worker 결과의 종합은 계속됩니다. 실패 Worker는 유효 점수에서 제외되고 최종 결과에는 평가 오류와 판단 유보가 표시됩니다.
 
-[`src/graph.py`](src/graph.py)의 `route_to_profiles()`가 프로필마다 하나의 `Send`를 만듭니다.
+상태는 실행 제어와 평가 페이로드를 구분합니다. `profile_task_plan`, 품질 verdict, `quality_retry_count`, `trace_id`는 라우팅·종료·재개에 쓰고, 보고서 Judge가 필요로 하는 출처 발췌만 회사별 최대 60개, 발췌당 800자로 제한해 `report_evidence`에 보관합니다. 판단 사유는 verdict finding에 남겨 `trace_id`와 함께 실행 결과에서 추적할 수 있습니다. 병렬 Worker 결과는 `profile_results`와 `report_corrections`의 reducer로 병합합니다.
+
+#### 2. 계획 기반 동적 Fan-out
+
+[`src/agents/profile.py`](src/agents/profile.py)의 `plan_profile_tasks()`가 현재 기업의 작업 목록을 State에 저장합니다. 이후 [`src/graph.py`](src/graph.py)의 `route_to_profiles()`는 계획에 포함된 작업에 대해서만 `Send`를 만듭니다.
 
 ```python
+workflow.add_edge("score_common", "plan_profile_tasks")
+workflow.add_conditional_edges(
+    "plan_profile_tasks",
+    route_to_profiles,
+    ["profile_agent"],
+)
+
 def route_to_profiles(state: InvestmentAgentState):
     return [
         Send("profile_agent", {
-            "profile_name": profile,
+            "task_id": task["task_id"],
+            "profile_name": task["profile_name"],
             "domain_scores": state.get("domain_scores", {}),
             "validated_evidence": state.get("validated_evidence", []),
             "current_company": state.get("current_company"),
         })
-        for profile in get_all_profiles()
+        for task in state.get("profile_task_plan", [])
     ]
 ```
 
-이 코드가 공통 점수와 동일한 검증 근거를 기술·안정·성장·균형·사업성 Agent에 동시에 전달합니다. Agent별 결과는 앞서 정의한 reducer로 다시 모입니다.
+Orchestrator가 설정에서 작업을 구성하고 난 뒤 Fan-out이 시작됩니다. 라우터는 프로필 목록을 직접 결정하지 않고 State의 계획만 사용하므로, 계획된 작업 수와 대상에 따라 Worker 실행이 달라집니다. 각 Worker에는 공통 점수, 검증 근거, 기업 정보와 상관을 위한 `task_id`를 전달하며, 결과는 reducer로 모입니다.
 
 #### 3. 조건 분기와 기업 반복
 
 ```python
 workflow.add_conditional_edges(
-    "score_common",
+    "plan_profile_tasks",
     route_to_profiles,
     ["profile_agent"],
 )
@@ -236,9 +264,15 @@ workflow.add_conditional_edges(
 )
 ```
 
-첫 번째 조건부 edge는 5개 Agent 병렬 평가를 시작합니다. 두 번째 조건부 edge는 아직 평가하지 않은 기업이 있으면 `select_company`로 돌아가고, 모든 기업이 끝나면 비교 단계로 이동합니다.
+첫 번째 조건부 edge는 Orchestrator가 State에 저장한 계획에 따라 Worker 병렬 평가를 시작합니다. 두 번째 조건부 edge는 아직 평가하지 않은 기업이 있으면 `select_company`로 돌아가고, 모든 기업이 끝나면 비교 단계로 이동합니다.
 
 근거 재검색 분기도 Graph에 정의되어 있지만, 현재 `route_evidence_check()`가 임시로 항상 충분하다고 처리합니다. 발표에서는 **조건 분기 구조는 구현했고, 근거 충분성에 따른 자동 질의 재작성은 개선 과제**라고 구분해 설명합니다.
+
+#### 4. Hybrid 보고서 품질 평가와 bounded rework
+
+보고서 생성 후 규칙 기반 검사를 수행하고 구조화된 LLM Judge를 호출합니다. 평가 항목은 **Groundedness, 중립성, 편향 통제**이며 관점 커버리지는 평가하지 않습니다. 규칙 검사는 보고서 인용 ID의 존재·출처 연결, 명백한 기술 우열 표현, 출처 분포를 확인합니다. Judge는 발췌문을 대조해 주장 근거, 기술 우열 단정, 출처 편중과 수정 대상 회사·프로필을 판정합니다.
+
+미달이면 Orchestrator가 finding에 지정된 회사·프로필만 `report_review_plan`으로 만들고 해당 보고서 재작업 Worker들을 병렬 실행합니다. Synthesizer는 수정된 추천·요약을 `final_comparison`에 반영한 뒤 Markdown과 PDF를 다시 생성합니다. 기본 재작업 상한은 1회이며, Judge 호출 실패와 상한 도달은 통과로 간주하지 않고 `report_errors` 및 State verdict에 남깁니다.
 
 ---
 
