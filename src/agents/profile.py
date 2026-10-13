@@ -1,12 +1,12 @@
 import yaml
 from pathlib import Path
-from typing import Dict, Any, List, TypedDict
+from typing import Dict, Any, List, NotRequired, TypedDict
 from pydantic import BaseModel, Field
 
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.schemas import FinalDecision, ProfileResult, Domain, ResultCategory
+from src.schemas import FinalDecision, ProfileResult, ProfileTask, Domain, ResultCategory
 
 # 설정·그래프에서는 영문 ID를, 기존 담당자별 코드에서는 한글명을 사용합니다.
 # 두 표기를 여기서만 연결해 설정 조회와 에이전트 분기가 같은 기준을 따릅니다.
@@ -27,10 +27,16 @@ def _canonical_profile_id(profile_id: str) -> str:
 
 
 class ProfileSendState(TypedDict):
+    task_id: NotRequired[str]
     profile_name: str
     domain_scores: Dict[Domain, float]
     validated_evidence: List[Any]
     current_company: Any
+
+
+class ProfilePlanState(TypedDict):
+    current_company: Any
+
 
 def get_all_profiles() -> List[str]:
     config_path = Path(__file__).parent.parent.parent / "configs" / "profiles.yaml"
@@ -40,6 +46,23 @@ def get_all_profiles() -> List[str]:
     with open(config_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return list(data["profiles"].keys())
+
+
+def plan_profile_tasks(state: ProfilePlanState) -> Dict[str, Any]:
+    """Build the worker task list from configured profiles for the current company."""
+    company = state.get("current_company")
+    company_name = company.name if company else "unknown-company"
+    tasks: List[ProfileTask] = []
+    for profile_name in get_all_profiles():
+        config = load_profile_config(profile_name)
+        task_id = f"{company_name}:{_canonical_profile_id(profile_name)}"
+        tasks.append({
+            "task_id": task_id,
+            "profile_name": profile_name,
+            "focus": config["focus"],
+        })
+    return {"profile_task_plan": tasks, "profile_results": []}
+
 
 class DomainContributions(BaseModel):
     technology: float = Field(description="기술 영역 기여 점수")
@@ -90,6 +113,7 @@ def profile_agent_node(state: ProfileSendState) -> Dict[str, Any]:
     각 성향별로 분리된 파일의 함수를 호출합니다.
     """
     profile_id = _canonical_profile_id(state["profile_name"])
+    task_id = state.get("task_id", "")
 
     try:
         # 성향별 커스텀 모듈 라우팅
@@ -127,6 +151,7 @@ def profile_agent_node(state: ProfileSendState) -> Dict[str, Any]:
         else:
             safe_message = error_type if not error_detail else f"{error_type}: {error_detail}"
         result = ProfileResult(
+            task_id=task_id,
             profile_name=profile_name,
             weighted_score=None,
             decision=FinalDecision.HOLD_RAG,
@@ -140,6 +165,9 @@ def profile_agent_node(state: ProfileSendState) -> Dict[str, Any]:
             due_diligence_questions=["연결 상태와 구조화 출력 스키마를 확인한 뒤 재평가할 것"],
             error_message=safe_message,
         )
+
+    if task_id:
+        result = result.model_copy(update={"task_id": task_id})
 
     # Reducer (`operator.add`)를 통해 graph state 배열에 자동 누적됨
     return {"profile_results": [result]}

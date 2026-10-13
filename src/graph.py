@@ -18,7 +18,14 @@ from src.nodes.core import (
     generate_report,
     validate_report
 )
-from src.agents.profile import profile_agent_node, get_all_profiles
+from src.agents.profile import profile_agent_node, plan_profile_tasks
+from src.nodes.report_quality import (
+    evaluate_report_quality,
+    plan_report_review,
+    report_reviewer_node,
+    route_to_report_reviewers,
+    synthesize_report_corrections,
+)
 
 def route_evidence_check(state: InvestmentAgentState) -> Literal["score_common", "rewrite_query", "record_unknown"]:
     """
@@ -37,15 +44,16 @@ def route_evidence_check(state: InvestmentAgentState) -> Literal["score_common",
             return "record_unknown"
 
 def route_to_profiles(state: InvestmentAgentState):
-    """공통 점수 후 5개 프로필 에이전트를 병렬 실행합니다."""
+    """Send one worker for each task in the Orchestrator's current plan."""
     return [
         Send("profile_agent", {
-            "profile_name": p,
+            "task_id": task["task_id"],
+            "profile_name": task["profile_name"],
             "domain_scores": state.get("domain_scores", {}),
             "validated_evidence": state.get("validated_evidence", []),
             "current_company": state.get("current_company")
         })
-        for p in get_all_profiles()
+        for task in state.get("profile_task_plan", [])
     ]
 
 def route_next_company(state: InvestmentAgentState) -> Literal["select_company", "compare_companies"]:
@@ -57,9 +65,48 @@ def route_next_company(state: InvestmentAgentState) -> Literal["select_company",
     else:
         return "compare_companies"
 
-def route_report_validation(state: InvestmentAgentState) -> str:
-    """검증 오류는 결과에 남기고 종료하여 무한 재생성 루프를 방지합니다."""
-    return END
+def route_report_quality(
+    state: InvestmentAgentState,
+) -> Literal["plan_report_review", "record_quality_failure", "__end__"]:
+    verdict = state.get("report_quality_verdict")
+    if verdict is None or verdict.judge_error:
+        return END
+    passed = (
+        verdict.groundedness_pass
+        and verdict.neutrality_pass
+        and verdict.source_bias_pass
+    )
+    if passed:
+        return END
+    if state.get("quality_retry_count", 0) >= state.get("quality_max_retries", 1):
+        return "record_quality_failure"
+    return "plan_report_review"
+
+
+def record_quality_failure(state: InvestmentAgentState) -> dict:
+    verdict = state.get("report_quality_verdict")
+    if verdict is None:
+        return {}
+    failed = [
+        label
+        for label, passed in (
+            ("Groundedness", verdict.groundedness_pass),
+            ("중립성", verdict.neutrality_pass),
+            ("편향 통제", verdict.source_bias_pass),
+        )
+        if not passed
+    ]
+    errors = list(state.get("report_errors", []))
+    errors.append(
+        f"보고서 품질 기준 미달 (재작업 {state.get('quality_retry_count', 0)}회): "
+        + ", ".join(failed)
+    )
+    return {"report_errors": list(dict.fromkeys(errors))}
+
+
+def route_report_review(state: InvestmentAgentState):
+    sends = route_to_report_reviewers(state)
+    return sends if sends else "record_quality_failure"
 
 def build_graph() -> StateGraph:
     workflow = StateGraph(InvestmentAgentState)
@@ -73,12 +120,18 @@ def build_graph() -> StateGraph:
     workflow.add_node("rewrite_query", rewrite_query)
     workflow.add_node("record_unknown", record_unknown)
     workflow.add_node("score_common", score_common)
+    workflow.add_node("plan_profile_tasks", plan_profile_tasks)
     workflow.add_node("profile_agent", profile_agent_node)
     workflow.add_node("synthesize_company", synthesize_company)
     workflow.add_node("save_company_result", save_company_result)
     workflow.add_node("compare_companies", compare_companies)
     workflow.add_node("generate_report", generate_report)
     workflow.add_node("validate_report", validate_report)
+    workflow.add_node("evaluate_report_quality", evaluate_report_quality)
+    workflow.add_node("record_quality_failure", record_quality_failure)
+    workflow.add_node("plan_report_review", plan_report_review)
+    workflow.add_node("report_reviewer", report_reviewer_node)
+    workflow.add_node("synthesize_report_corrections", synthesize_report_corrections)
 
     # 2. 엣지 연결
     workflow.set_entry_point("load_inputs")
@@ -101,8 +154,9 @@ def build_graph() -> StateGraph:
     workflow.add_edge("rewrite_query", "retrieve_evidence")
     workflow.add_edge("record_unknown", "score_common")
 
-    # 병렬 에이전트 실행
-    workflow.add_conditional_edges("score_common", route_to_profiles, ["profile_agent"])
+    # Plan first, then dynamically fan out only the tasks stored in State.
+    workflow.add_edge("score_common", "plan_profile_tasks")
+    workflow.add_conditional_edges("plan_profile_tasks", route_to_profiles, ["profile_agent"])
     workflow.add_edge("profile_agent", "synthesize_company")
     
     workflow.add_edge("synthesize_company", "save_company_result")
@@ -119,15 +173,28 @@ def build_graph() -> StateGraph:
 
     workflow.add_edge("compare_companies", "generate_report")
     workflow.add_edge("generate_report", "validate_report")
+    workflow.add_edge("validate_report", "evaluate_report_quality")
 
-    # 조건부 엣지: 보고서 검증 오류?
     workflow.add_conditional_edges(
-        "validate_report",
-        route_report_validation,
+        "evaluate_report_quality",
+        route_report_quality,
         {
-            END: END
+            "plan_report_review": "plan_report_review",
+            "record_quality_failure": "record_quality_failure",
+            END: END,
         }
     )
+    workflow.add_edge("record_quality_failure", END)
+    workflow.add_conditional_edges(
+        "plan_report_review",
+        route_report_review,
+        {
+            "report_reviewer": "report_reviewer",
+            "record_quality_failure": "record_quality_failure",
+        },
+    )
+    workflow.add_edge("report_reviewer", "synthesize_report_corrections")
+    workflow.add_edge("synthesize_report_corrections", "generate_report")
 
     return workflow.compile()
 

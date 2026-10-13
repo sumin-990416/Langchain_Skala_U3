@@ -5,7 +5,7 @@ import yaml
 from langchain_openai import ChatOpenAI
 from src.schemas import (
     InvestmentAgentState, Company, Domain, Question, Evidence, 
-    CompanyResult, ComparisonResult, FinalDecision, ResultCategory
+    CompanyResult, ComparisonResult, FinalDecision, ResultCategory, ReportEvidence
 )
 from src.rag.vector_store import retrieve_top_k
 
@@ -193,8 +193,40 @@ def synthesize_company(state: InvestmentAgentState) -> dict:
 def save_company_result(state: InvestmentAgentState) -> dict:
     idx = state.get("current_index", 0)
     res = state.get("company_result")
+    company_name = res.company_name if res else "Unknown"
+    cited_source_ids = {
+        source_id
+        for profile in (res.profile_results if res else [])
+        for source_id in profile.supporting_evidence_ids + profile.contrary_evidence_ids
+    }
+    validated_evidence = sorted(
+        state.get("validated_evidence", []),
+        key=lambda item: item.source_id not in cited_source_ids,
+    )
+    report_evidence = []
+    seen_sources = set()
+    for item in validated_evidence:
+        source_key = (item.source_id, item.source_type)
+        if not item.source_id or source_key in seen_sources:
+            continue
+        seen_sources.add(source_key)
+        report_evidence.append(ReportEvidence(
+            company_name=company_name,
+            item_id=item.item_id,
+            source_id=item.source_id,
+            source_type=item.source_type,
+            evidence_grade=item.evidence_grade,
+            content=item.content[:800],
+        ))
+        if len(report_evidence) == 60:
+            break
     # company_results (Annotated reducer)에 누적
-    return {"company_results": [res], "current_index": idx + 1, "profile_results": []} # 리스트 클리어 트릭 필요하지만 지금은 reducer가 처리
+    return {
+        "company_results": [res],
+        "current_index": idx + 1,
+        "profile_results": [],
+        "report_evidence": report_evidence,
+    }
 
 def _format_score(score: float | None, suffix: str = "") -> str:
     """미산출은 숫자나 0점 대신 명시적인 문구로 표시한다."""
@@ -268,6 +300,13 @@ def generate_report(state: InvestmentAgentState) -> dict:
                 f"\n- **{profile.profile_name}**: {score} / {profile.result_category.value} "
                 f"/ {decision} / 근거 {coverage}\n"
             )
+            profile_source_ids = list(dict.fromkeys(
+                profile.supporting_evidence_ids + profile.contrary_evidence_ids
+            ))
+            if profile_source_ids:
+                report += "  - 근거 ID: " + ", ".join(
+                    f"[{source_id}]" for source_id in profile_source_ids
+                ) + "\n"
             if profile.unknown_items:
                 report += "  - 근거 부족: " + "; ".join(profile.unknown_items) + "\n"
             if profile.error_message:
@@ -290,7 +329,7 @@ def generate_report(state: InvestmentAgentState) -> dict:
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
 
-    errors = []
+    errors = list(state.get("report_errors", []))
     try:
         from src.report_generator import generate_pdf_report
         pdf_path = generate_pdf_report(comp)

@@ -1,6 +1,6 @@
 import operator
 from enum import Enum
-from typing import Annotated, Any, Dict, List, Optional, TypedDict
+from typing import Annotated, Any, Dict, List, Literal, Optional, TypedDict
 from pydantic import BaseModel, Field
 
 # --- Enums ---
@@ -48,6 +48,7 @@ class Evidence(BaseModel):
     is_direct: bool = Field(default=False, description="기업과 직접 연관된 근거 여부")
 
 class ProfileResult(BaseModel):
+    task_id: str = Field(default="", description="Orchestrator가 할당한 작업 식별자")
     profile_name: str = Field(description="기술·안정·성장·균형·사업 중 하나")
     weighted_score: Optional[float] = Field(
         default=None, ge=0, le=100, allow_inf_nan=False,
@@ -95,11 +96,68 @@ class ComparisonResult(BaseModel):
     companies: List[CompanyResult] = Field(default_factory=list)
     comparison_table: str = ""
 
+
+class ProfileTask(TypedDict):
+    task_id: str
+    profile_name: str
+    focus: str
+
+
+class ReportReviewTask(TypedDict):
+    task_id: str
+    company_name: str
+    profile_name: str
+    criteria: List[str]
+    feedback: List[str]
+    revise_company_summary: bool
+
+
+class ReportEvidence(BaseModel):
+    company_name: str
+    item_id: str
+    source_id: str
+    source_type: str
+    evidence_grade: str
+    content: str
+
+
+class ReportQualityFinding(BaseModel):
+    criterion: Literal["groundedness", "neutrality", "source_bias"]
+    reason: str
+    company_names: List[str] = Field(default_factory=list)
+    profile_names: List[str] = Field(default_factory=list)
+
+
+class ReportQualityVerdict(BaseModel):
+    groundedness_pass: bool
+    neutrality_pass: bool
+    source_bias_pass: bool
+    findings: List[ReportQualityFinding] = Field(default_factory=list)
+    judge_error: str = ""
+
+
+class ReportCorrection(BaseModel):
+    company_name: str
+    profile_name: str
+    recommendation: Optional[str] = None
+    company_summary: Optional[str] = None
+    error_message: str = ""
+
+
 # --- Graph State ---
 def reset_or_add(left: List[ProfileResult], right: List[ProfileResult]) -> List[ProfileResult]:
     if right == []:
         return []
     return left + right
+
+
+def reset_or_add_corrections(
+    left: List[ReportCorrection], right: List[ReportCorrection]
+) -> List[ReportCorrection]:
+    if right == []:
+        return []
+    return left + right
+
 
 class InvestmentAgentState(TypedDict):
     selected_companies: List[Company]
@@ -115,7 +173,15 @@ class InvestmentAgentState(TypedDict):
     unknown_items: List[str]
     
     domain_scores: Dict[Domain, float]
+    profile_task_plan: List[ProfileTask]
     profile_results: Annotated[List[ProfileResult], reset_or_add]
+    report_evidence: Annotated[List[ReportEvidence], operator.add]
+    report_quality_verdict: Optional[ReportQualityVerdict]
+    report_review_plan: List[ReportReviewTask]
+    report_corrections: Annotated[List[ReportCorrection], reset_or_add_corrections]
+    quality_retry_count: int
+    quality_max_retries: int
+    trace_id: str
     company_result: Optional[CompanyResult]
     company_results: Annotated[List[CompanyResult], operator.add]
     

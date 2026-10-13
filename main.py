@@ -4,6 +4,7 @@ warnings.filterwarnings("ignore")
 import os
 import sys
 import shutil
+from uuid import uuid4
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -133,7 +134,15 @@ def main():
         retry_count={},
         unknown_items=[],
         domain_scores={},
+        profile_task_plan=[],
         profile_results=[],
+        report_evidence=[],
+        report_quality_verdict=None,
+        report_review_plan=[],
+        report_corrections=[],
+        quality_retry_count=0,
+        quality_max_retries=1,
+        trace_id=uuid4().hex,
         company_result=None,
         company_results=[],
         final_comparison=None,
@@ -167,8 +176,16 @@ def main():
                         console.print(f"\n🎯 [bold yellow]타겟 기업 설정됨:[/bold yellow] {c.name}")
                         
                 elif node_name == "profile_agent":
-                    console.print(f" ➔ 👥 5대 프로필 에이전트 병렬(Parallel) 분석 완료")
+                    console.print(" ➔ 👥 Orchestrator가 계획한 프로필 Worker 분석 완료")
                     progress.update(task_id, description=f"[cyan]다중 관점 평가 종합 중...[/cyan]")
+
+                elif node_name == "plan_profile_tasks":
+                    tasks = node_state.get("profile_task_plan", [])
+                    console.print(f" ➔ 🧭 Orchestrator 작업 계획: {len(tasks)}개 Worker")
+
+                elif node_name == "plan_report_review":
+                    tasks = node_state.get("report_review_plan", [])
+                    console.print(f" ➔ 🛠️ 품질 평가 기반 선택 재작업: {len(tasks)}개 Worker")
                     
                 elif node_name == "synthesize_company":
                     res = node_state.get("company_result")
@@ -191,6 +208,24 @@ def main():
                     progress.update(task_id, description="[magenta]보고서 저장 중...[/magenta]")
 
                 elif node_name == "validate_report":
+                    final_report_errors = node_state.get("report_errors", final_report_errors)
+
+                elif node_name == "evaluate_report_quality":
+                    final_report_errors = node_state.get("report_errors", final_report_errors)
+                    verdict = node_state.get("report_quality_verdict")
+                    if verdict:
+                        status = "통과" if (
+                            verdict.groundedness_pass
+                            and verdict.neutrality_pass
+                            and verdict.source_bias_pass
+                            and not verdict.judge_error
+                        ) else "미달"
+                        console.print(
+                            f" ➔ 🔎 보고서 품질 평가: {status} "
+                            f"(근거성·중립성·편향 통제)"
+                        )
+
+                elif node_name == "record_quality_failure":
                     final_report_errors = node_state.get("report_errors", final_report_errors)
                     
                 elif node_name in ["build_questions", "retrieve_evidence", "score_common"]:
