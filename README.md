@@ -83,37 +83,60 @@ Agent 최종점수 = 공통 프로필 점수 × 70%
 
 ```mermaid
 flowchart TD
-    A[PDF/TXT 입력] --> B[문서 로딩 및 청킹]
-    B --> C[multilingual-e5-base 임베딩]
-    C --> D[FAISS Vector DB]
-    D --> E[기업별 평가 질문 생성]
-    E --> F[관련 근거 Top-K 검색]
-    F --> G[근거 검증]
-    G --> H[공통 5개 영역 평가]
-    H --> O[Orchestrator: 프로필 작업 계획을 State에 저장]
-    O --> FAN{계획된 작업만 Send로 병렬 실행}
-    FAN --> T[기술중심형]
-    FAN --> S[안정형]
-    FAN --> R[성장형]
-    FAN --> B2[균형형]
-    FAN --> M[사업성중심형]
-    T --> SYN[기업별 결과 종합]
-    S --> SYN
-    R --> SYN
-    B2 --> SYN
-    M --> SYN
-    SYN --> K{남은 기업?}
-    K -->|있음| E
-    K -->|없음| L[기업 비교]
-    L --> N[Markdown 및 PDF 보고서]
-    N --> Q[Hybrid 품질 평가]
-    Q -->|통과| Z[END]
-    Q -->|미달·재시도 가능| RP[Orchestrator: 영향받은 프로필 재작업 계획]
-    RP --> RW[선택된 보고서 재작업 Worker 병렬 실행]
-    RW --> RS[수정 결과 Synthesizer 집계]
-    RS --> N
-    Q -->|재시도 상한 도달| Z
+    START([시작]) --> ENV["환경 점검<br/>OpenAI 연결 · LangSmith 설정"]
+    ENV --> DOCS["분석 문서 선택<br/>또는 기존 data/raw 사용"]
+    DOCS --> INGEST["문서 로딩·청킹<br/>임베딩 생성 · FAISS 저장"]
+    INGEST --> RUN["LangGraph 실행 시작<br/>run_name · trace_id"]
+    RUN --> LOAD["load_inputs<br/>분석 대상 기업 로드"]
+
+    LOAD --> SELECT["select_company<br/>현재 기업 선택"]
+    SELECT --> QUESTIONS["build_questions<br/>평가 질문 구성"]
+    QUESTIONS --> SEARCH["retrieve_evidence<br/>관련 근거 검색"]
+    SEARCH --> VALIDATE["validate_evidence<br/>근거 확인"]
+    VALIDATE --> EVIDENCE_ROUTE{"근거 충분 여부"}
+    EVIDENCE_ROUTE -->|"현재 구현: 충분으로 처리"| SCORE["score_common<br/>공통 점수 계산"]
+    EVIDENCE_ROUTE -.->|"재검색 경로: 현재 비활성"| REWRITE["rewrite_query<br/>검색 질의 수정"]
+    REWRITE -.-> SEARCH
+    EVIDENCE_ROUTE -.->|"재시도 상한 초과 시"| UNKNOWN["record_unknown<br/>미확인 항목 기록"]
+    UNKNOWN -.-> SCORE
+
+    SCORE --> ORCH["orchestrator_plan_workers<br/>프로필 작업 계획을 State에 기록"]
+    ORCH --> FANOUT{"계획에 따라<br/>동적 Send fan-out"}
+    FANOUT --> TECH["worker_기술중심형"]
+    FANOUT --> STABLE["worker_안정형"]
+    FANOUT --> GROWTH["worker_성장형"]
+    FANOUT --> BALANCED["worker_균형형"]
+    FANOUT --> BUSINESS["worker_사업성중심형"]
+
+    TECH --> SYNTH["synthesizer_aggregate_company<br/>Worker 결과 집계"]
+    STABLE --> SYNTH
+    GROWTH --> SYNTH
+    BALANCED --> SYNTH
+    BUSINESS --> SYNTH
+    SYNTH --> SAVE["save_company_result<br/>기업 결과 저장"]
+    SAVE --> MORE{"남은 기업?"}
+    MORE -->|"있음"| SELECT
+    MORE -->|"없음"| COMPARE["compare_companies<br/>기업 비교"]
+
+    COMPARE --> REPORT["generate_report<br/>SUMMARY · 본문 · REFERENCE<br/>Markdown · PDF 생성"]
+    REPORT --> VALIDATE_REPORT["validate_report<br/>산출물 확인"]
+    VALIDATE_REPORT --> JUDGE["evaluate_report_quality<br/>Groundedness · 중립성 · 편향 통제"]
+    JUDGE --> PASS{"품질 기준 통과?"}
+    PASS -->|"통과"| END([종료])
+    PASS -->|"미달 · 재작업 가능"| REVIEW_PLAN["plan_report_review<br/>대상 프로필 재작업 계획"]
+    REVIEW_PLAN --> REVIEW_FANOUT{"대상 Worker 동적 분배"}
+    REVIEW_FANOUT --> REVIEWER["report_reviewer<br/>지정된 기업·프로필 재작업"]
+    REVIEWER --> CORRECTIONS["synthesize_report_corrections<br/>수정 결과 집계"]
+    CORRECTIONS --> REPORT
+    PASS -->|"미달 · 재시도 상한 도달"| FAILURE["record_quality_failure<br/>미달 사항 기록"]
+    FAILURE --> END
+
+    RUN -.-> TRACE["LangSmith trace<br/>Graph run과 내부 노드"]
 ```
+
+트레이스에서 Orchestrator, 프로필별 Worker, Synthesizer 노드는 위 이름으로 표시됩니다. 다섯 Worker 노드는 각 프로필 전용 이름을 갖지만, 내부 실행 함수는 공통 `profile_agent_node`이며 `profile_name` 설정에 따라 해당 프로필 평가 함수를 호출합니다.
+
+점선으로 표시한 근거 재검색 경로는 현재 `route_evidence_check()`가 항상 근거 충분으로 반환하므로 실행되지 않습니다. 그래프에는 재검색 분기 구조가 있지만, 근거 충분도에 따른 자동 재검색은 아직 활성화되지 않은 상태입니다.
 
 ### 기술별 역할
 
@@ -223,16 +246,30 @@ Worker 실패는 **계속 진행(Continue)** 으로 처리합니다. 실패한 W
 [`src/agents/profile.py`](src/agents/profile.py)의 `plan_profile_tasks()`가 현재 기업의 작업 목록을 State에 저장합니다. 이후 [`src/graph.py`](src/graph.py)의 `route_to_profiles()`는 계획에 포함된 작업에 대해서만 `Send`를 만듭니다.
 
 ```python
-workflow.add_edge("score_common", "plan_profile_tasks")
+workflow.add_edge("score_common", "orchestrator_plan_workers")
 workflow.add_conditional_edges(
-    "plan_profile_tasks",
+    "orchestrator_plan_workers",
     route_to_profiles,
-    ["profile_agent"],
+    [
+        "worker_기술중심형",
+        "worker_안정형",
+        "worker_성장형",
+        "worker_균형형",
+        "worker_사업성중심형",
+    ],
 )
+
+worker_nodes = {
+    "technology_focused": "worker_기술중심형",
+    "stability_focused": "worker_안정형",
+    "growth_focused": "worker_성장형",
+    "balanced": "worker_균형형",
+    "business_focused": "worker_사업성중심형",
+}
 
 def route_to_profiles(state: InvestmentAgentState):
     return [
-        Send("profile_agent", {
+        Send(worker_nodes[task["profile_name"]], {
             "task_id": task["task_id"],
             "profile_name": task["profile_name"],
             "domain_scores": state.get("domain_scores", {}),
@@ -241,6 +278,9 @@ def route_to_profiles(state: InvestmentAgentState):
         })
         for task in state.get("profile_task_plan", [])
     ]
+
+for worker_node in worker_nodes.values():
+    workflow.add_edge(worker_node, "synthesizer_aggregate_company")
 ```
 
 Orchestrator가 설정에서 작업을 구성하고 난 뒤 Fan-out이 시작됩니다. 라우터는 프로필 목록을 직접 결정하지 않고 State의 계획만 사용하므로, 계획된 작업 수와 대상에 따라 Worker 실행이 달라집니다. 각 Worker에는 공통 점수, 검증 근거, 기업 정보와 상관을 위한 `task_id`를 전달하며, 결과는 reducer로 모입니다.
@@ -249,9 +289,15 @@ Orchestrator가 설정에서 작업을 구성하고 난 뒤 Fan-out이 시작됩
 
 ```python
 workflow.add_conditional_edges(
-    "plan_profile_tasks",
+    "orchestrator_plan_workers",
     route_to_profiles,
-    ["profile_agent"],
+    [
+        "worker_기술중심형",
+        "worker_안정형",
+        "worker_성장형",
+        "worker_균형형",
+        "worker_사업성중심형",
+    ],
 )
 
 workflow.add_conditional_edges(
